@@ -199,6 +199,8 @@ class AntigravityAgentEngine:
             }
             if self.config.gemini_api_key:
                 kwargs["api_key"] = self.config.gemini_api_key
+                if self.config.gemini_api_key.startswith("AQ."):
+                    kwargs["vertex"] = True
             if self.conversation_id:
                 kwargs["conversation_id"] = self.conversation_id
             if self.config.agy_enable_write_tools:
@@ -239,7 +241,10 @@ class AntigravityAgentEngine:
                 api_key = self.config.gemini_api_key or os.environ.get(
                     "GEMINI_API_KEY", ""
                 )
-                client = genai.Client(api_key=api_key)
+                client = genai.Client(
+                    api_key=api_key,
+                    vertexai=api_key.startswith("AQ."),
+                )
                 tools = self.build_custom_tools()
 
                 response = await asyncio.to_thread(

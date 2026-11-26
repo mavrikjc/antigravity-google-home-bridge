@@ -27,7 +27,9 @@ async def _serve_dual_http_https(
     """Run HTTP (:8765 for Google Home Cast) and HTTPS (:8443 for mobile Safari/Chrome mic) concurrently."""
     from agy_home_bridge.server import app
 
-    http_cfg = uvicorn.Config(app, host=host, port=http_port, log_level="info")
+    # Bind to "::" so both IPv4 (0.0.0.0) and IPv6 connections are accepted
+    bind_host = "::" if host == "0.0.0.0" else host
+    http_cfg = uvicorn.Config(app, host=bind_host, port=http_port, log_level="info")
     http_server = uvicorn.Server(http_cfg)
 
     if not enable_https:
@@ -40,7 +42,7 @@ async def _serve_dual_http_https(
     )
     https_cfg = uvicorn.Config(
         app,
-        host=host,
+        host=bind_host,
         port=https_port,
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),

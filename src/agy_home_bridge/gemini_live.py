@@ -78,7 +78,12 @@ class FullDuplexLiveBridge:
 
             client = genai.Client(
                 api_key=api_key,
-                http_options={"api_version": "v1alpha"},
+                vertexai=api_key.startswith("AQ."),
+                http_options=(
+                    None
+                    if api_key.startswith("AQ.")
+                    else {"api_version": "v1alpha"}
+                ),
             )
 
             tool_declarations = [
