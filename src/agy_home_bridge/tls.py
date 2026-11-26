@@ -29,7 +29,14 @@ logger = logging.getLogger(__name__)
 def ensure_lan_tls_certificates(
     cert_dir: Path,
     lan_ip: str,
-    hostname: str = "agy-home-bridge.local",
+    hostname: str = "bridge.home",
+    extra_dns_names: tuple[str, ...] = (
+        "bridge.home",
+        "agy-home-bridge.home",
+        "bridge-lxc.home",
+        "agy-home-bridge.local",
+        "agy-home-bridge",
+    ),
 ) -> tuple[Path, Path, Path]:
     """Ensure Root CA (`ca.pem`) and LAN Server Certificate (`server.crt`, `server.key`) exist.
 
@@ -42,14 +49,15 @@ def ensure_lan_tls_certificates(
     server_cert_path = cert_dir / "server.crt"
     server_key_path = cert_dir / "server.key"
     ip_marker_path = cert_dir / "lan_ip.txt"
+    marker_value = f"{lan_ip}|{hostname}|{','.join(extra_dns_names)}"
 
-    # Regenerate server cert if LAN IP changed or certs don't exist yet
+    # Regenerate server cert if LAN IP or SAN hostnames changed or certs don't exist yet
     if (
         ca_cert_path.exists()
         and server_cert_path.exists()
         and server_key_path.exists()
         and ip_marker_path.exists()
-        and ip_marker_path.read_text(encoding="utf-8").strip() == lan_ip
+        and ip_marker_path.read_text(encoding="utf-8").strip() == marker_value
     ):
         return ca_cert_path, server_cert_path, server_key_path
 
@@ -107,25 +115,27 @@ def ensure_lan_tls_certificates(
         )
         ca_cert_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
 
-    # 2. Generate Server Leaf Certificate signed by Root CA with SAN for LAN IP
+    # 2. Generate Server Leaf Certificate signed by Root CA with SAN for bridge.home & LAN IP
     server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     server_subject = x509.Name(
         [
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Antigravity Home Bridge"),
-            x509.NameAttribute(NameOID.COMMON_NAME, lan_ip),
+            x509.NameAttribute(NameOID.COMMON_NAME, hostname),
         ]
     )
 
-    san_entries: list[x509.GeneralName] = [
-        x509.DNSName("localhost"),
-        x509.DNSName(hostname),
-        x509.DNSName("agy-home-bridge"),
-        x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-    ]
+    seen_dns: set[str] = set()
+    san_entries: list[x509.GeneralName] = []
+    for dns_name in ("localhost", hostname, *extra_dns_names):
+        if dns_name and dns_name not in seen_dns:
+            seen_dns.add(dns_name)
+            san_entries.append(x509.DNSName(dns_name))
+    san_entries.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
     try:
         san_entries.append(x509.IPAddress(ipaddress.ip_address(lan_ip)))
     except ValueError:
-        san_entries.append(x509.DNSName(lan_ip))
+        if lan_ip not in seen_dns:
+            san_entries.append(x509.DNSName(lan_ip))
 
     server_cert = (
         x509.CertificateBuilder()
@@ -160,10 +170,11 @@ def ensure_lan_tls_certificates(
         server_cert.public_bytes(serialization.Encoding.PEM)
         + ca_cert.public_bytes(serialization.Encoding.PEM)
     )
-    ip_marker_path.write_text(lan_ip, encoding="utf-8")
+    ip_marker_path.write_text(marker_value, encoding="utf-8")
 
     logger.info(
-        "Generated LAN TLS certificate for https://%s (signed by %s)",
+        "Generated LAN TLS certificate for https://%s & https://%s (signed by %s)",
+        hostname,
         lan_ip,
         ca_cert_path,
     )

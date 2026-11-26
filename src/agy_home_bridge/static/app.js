@@ -61,9 +61,12 @@ const waveformCanvas = document.getElementById('waveformCanvas');
 const canvasCtx = waveformCanvas.getContext('2d');
 const secureContextBanner = document.getElementById('secureContextBanner');
 const openHttpsLink = document.getElementById('openHttpsLink');
-const httpsTargetUrl = `https://${window.location.hostname}:8443`;
+const isHomeDomain = window.location.hostname.endsWith('.home');
+const httpsTargetUrl = isHomeDomain
+  ? `https://${window.location.hostname}`
+  : `https://${window.location.hostname}:8443`;
 if (openHttpsLink) {
-  openHttpsLink.href = httpsTargetUrl;
+  openHttpsLink.href = `https://${window.location.hostname}:8443`;
 }
 if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
   if (secureContextBanner) {
