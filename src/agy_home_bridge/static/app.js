@@ -103,18 +103,24 @@ function setOrbState(state, label) {
   }
 }
 
-function updateRoomPills(selectedRoom, speakers = []) {
+let knownSpeakers = [];
+
+function updateRoomPills(selectedRoom, speakers = null) {
   activeRoom = selectedRoom || activeRoom;
   activeRoomLabel.textContent = activeRoom;
-
-  const knownNames = new Set(['Whole Home', 'Office', 'Kitchen', 'Living Room', 'Bedroom']);
-  for (const sp of speakers) {
-    if (sp && sp.name) knownNames.add(sp.name);
+  if (Array.isArray(speakers) && speakers.length) {
+    knownSpeakers = speakers;
   }
-  knownNames.add(activeRoom);
+
+  // Only show speakers the server actually discovered on the LAN (no placeholder rooms).
+  const names = [];
+  for (const sp of knownSpeakers) {
+    if (sp && sp.name && !names.includes(sp.name)) names.push(sp.name);
+  }
+  if (activeRoom && !names.includes(activeRoom)) names.unshift(activeRoom);
 
   roomPills.innerHTML = '';
-  for (const name of knownNames) {
+  for (const name of names) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `room-pill${name.toLowerCase() === activeRoom.toLowerCase() ? ' active' : ''}`;
@@ -122,6 +128,13 @@ function updateRoomPills(selectedRoom, speakers = []) {
     btn.textContent = name;
     btn.addEventListener('click', () => selectRoom(name));
     roomPills.appendChild(btn);
+  }
+}
+
+function syncRoutingRadios(mode) {
+  routingMode = mode;
+  for (const radio of document.querySelectorAll('input[name="routingMode"]')) {
+    radio.checked = radio.value === mode;
   }
 }
 
@@ -228,7 +241,7 @@ function connectWebSocket() {
         updateRoomPills(data.active_room, data.speakers || []);
       }
       if (data.routing_mode) {
-        routingMode = data.routing_mode;
+        syncRoutingRadios(data.routing_mode);
       }
       statusSubtitle.textContent = `Live (${data.state || 'ready'}) · Speaker: ${activeRoom}`;
       if (data.state === 'thinking') {

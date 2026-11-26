@@ -199,6 +199,9 @@ class AntigravityAgentEngine:
                 "system_instructions": self.system_instructions,
                 "tools": self.build_custom_tools(),
                 "save_dir": save_dir,
+                # Without this the SDK only allows the process cwd, so the agent
+                # could not reach the projects workspace.
+                "workspaces": [str(Path(self.config.agy_workspace_dir).resolve())],
                 "app_data_dir": app_data_dir,
             }
             if self.config.gemini_api_key:

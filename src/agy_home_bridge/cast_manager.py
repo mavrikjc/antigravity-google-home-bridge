@@ -268,6 +268,10 @@ class GoogleHomeCastManager:
                     break
 
         if cc is None:
+            logger.warning(
+                "Cast target '%s' is not a discovered Google Home device; audio not played",
+                speaker_name,
+            )
             return {
                 "status": "queued_no_cast_device",
                 "detail": (
@@ -288,6 +292,7 @@ class GoogleHomeCastManager:
                 stream_type="BUFFERED",
             )
             mc.block_until_active(timeout=5.0)
+            logger.info("Casting %s to Google Home '%s'", media_url, speaker_name)
             return {
                 "status": "casting",
                 "detail": f"Playing {media_url} on {speaker_name}",

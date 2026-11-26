@@ -177,6 +177,16 @@ class FullDuplexLiveBridge:
                 )
                 for task in pending:
                     task.cancel()
+                for task in done:
+                    exc = task.exception()
+                    if exc and not isinstance(exc, WebSocketDisconnect):
+                        # e.g. Gemini closing an idle session (1008 client inactivity).
+                        # Close cleanly so the PWA auto-reconnects with a fresh session.
+                        logger.info("Gemini Live session ended: %s", exc)
+                        try:
+                            await websocket.close(code=1011, reason="live session ended")
+                        except Exception:
+                            pass
 
         except WebSocketDisconnect:
             logger.info("Live WebSocket client disconnected.")

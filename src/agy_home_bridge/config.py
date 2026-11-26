@@ -67,7 +67,7 @@ class BridgeSettings(BaseSettings):
     # Google Home / Cast multi-room settings
     default_cast_room: str = Field(default="Whole Home", alias="DEFAULT_CAST_ROOM")
     default_audio_routing: Literal["direct", "cast", "both"] = Field(
-        default="both", alias="DEFAULT_AUDIO_ROUTING"
+        default="cast", alias="DEFAULT_AUDIO_ROUTING"
     )
     known_cast_hosts: str = Field(default="", alias="KNOWN_CAST_HOSTS")
 
