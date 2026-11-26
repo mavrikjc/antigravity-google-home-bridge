@@ -32,6 +32,7 @@ def ensure_lan_tls_certificates(
     hostname: str = "bridge.home",
     extra_dns_names: tuple[str, ...] = (
         "bridge.home",
+        "bridge.local",
         "agy-home-bridge.home",
         "bridge-lxc.home",
         "agy-home-bridge.local",
