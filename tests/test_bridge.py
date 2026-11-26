@@ -65,8 +65,9 @@ def test_config_and_lan_ip_detection(test_settings: BridgeSettings) -> None:
     assert isinstance(ip, str) and len(ip) >= 7
     assert test_settings.parsed_known_cast_hosts == ["192.168.1.101", "192.168.1.102"]
 
-    empty_cfg = BridgeSettings(HOST_LAN_IP="", KNOWN_CAST_HOSTS="")
+    empty_cfg = BridgeSettings(HOST_LAN_IP="", KNOWN_CAST_HOSTS="", HW_MIC_DEVICE_INDEX="")
     assert empty_cfg.parsed_known_cast_hosts == []
+    assert empty_cfg.hw_mic_device_index is None
     assert empty_cfg.resolved_lan_ip == ip
 
     with patch("socket.socket", side_effect=OSError("no network")):

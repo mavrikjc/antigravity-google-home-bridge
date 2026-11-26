@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import socket
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,6 +80,13 @@ class BridgeSettings(BaseSettings):
     hw_mic_silence_duration_sec: float = Field(
         default=1.1, alias="HW_MIC_SILENCE_DURATION_SEC"
     )
+
+    @field_validator("hw_mic_device_index", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, val: Any) -> Any:
+        if val == "" or (isinstance(val, str) and not val.strip()):
+            return None
+        return val
 
     @property
     def resolved_lan_ip(self) -> str:
