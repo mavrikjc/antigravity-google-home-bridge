@@ -15,6 +15,39 @@ from agy_home_bridge.cast_manager import GoogleHomeCastManager
 from agy_home_bridge.config import settings
 from agy_home_bridge.hardware_mic import HardwareMicDaemon
 from agy_home_bridge.mcp_server import BridgeMCPServer, run_stdio_mcp_loop
+from agy_home_bridge.tls import ensure_lan_tls_certificates
+
+
+async def _serve_dual_http_https(
+    host: str,
+    http_port: int,
+    https_port: int,
+    enable_https: bool,
+) -> None:
+    """Run HTTP (:8765 for Google Home Cast) and HTTPS (:8443 for mobile Safari/Chrome mic) concurrently."""
+    from agy_home_bridge.server import app
+
+    http_cfg = uvicorn.Config(app, host=host, port=http_port, log_level="info")
+    http_server = uvicorn.Server(http_cfg)
+
+    if not enable_https:
+        await http_server.serve()
+        return
+
+    _, cert_path, key_path = ensure_lan_tls_certificates(
+        settings.certs_dir,
+        settings.resolved_lan_ip,
+    )
+    https_cfg = uvicorn.Config(
+        app,
+        host=host,
+        port=https_port,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+        log_level="info",
+    )
+    https_server = uvicorn.Server(https_cfg)
+    await asyncio.gather(http_server.serve(), https_server.serve())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +63,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve_parser.add_argument("--host", default=settings.bridge_host)
     serve_parser.add_argument("--port", type=int, default=settings.bridge_port)
+    serve_parser.add_argument(
+        "--https-port", type=int, default=settings.bridge_https_port
+    )
+    serve_parser.add_argument(
+        "--no-https",
+        action="store_true",
+        help="Disable the companion HTTPS listener (:8443)",
+    )
     serve_parser.add_argument("--reload", action="store_true")
 
     # `discover` subcommand
@@ -75,13 +116,25 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "serve":
         host = getattr(args, "host", settings.bridge_host)
         port = getattr(args, "port", settings.bridge_port)
+        https_port = getattr(args, "https_port", settings.bridge_https_port)
+        no_https = getattr(args, "no_https", False)
         reload_flag = getattr(args, "reload", False)
-        uvicorn.run(
-            "agy_home_bridge.server:app",
-            host=host,
-            port=port,
-            reload=reload_flag,
-        )
+        if reload_flag or no_https or not settings.enable_https:
+            uvicorn.run(
+                "agy_home_bridge.server:app",
+                host=host,
+                port=port,
+                reload=reload_flag,
+            )
+        else:
+            asyncio.run(
+                _serve_dual_http_https(
+                    host=host,
+                    http_port=port,
+                    https_port=https_port,
+                    enable_https=True,
+                )
+            )
         return 0
 
     if cmd == "discover":

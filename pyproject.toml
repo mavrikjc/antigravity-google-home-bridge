@@ -34,6 +34,7 @@ dependencies = [
     "gTTS>=2.5.3",
     "google-genai>=1.0.0",
     "python-dotenv>=1.0.1",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

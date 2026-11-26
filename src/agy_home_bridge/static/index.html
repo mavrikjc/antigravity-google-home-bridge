@@ -30,6 +30,18 @@
       </div>
     </header>
 
+    <!-- Secure Context Banner for Mobile Safari / Chrome when opened over plain HTTP -->
+    <section class="secure-banner" id="secureContextBanner" hidden aria-label="Mobile Microphone HTTPS Requirement">
+      <div class="secure-banner-text">
+        <strong>📱 Mobile Microphone Requires HTTPS</strong>
+        <span>iOS Safari &amp; Android Chrome disable live microphone access on plain <code>http://</code> LAN IPs.</span>
+      </div>
+      <div class="secure-banner-actions">
+        <a class="primary-btn" id="openHttpsLink" href="https://192.168.1.249:8443">Open Secure HTTPS (:8443)</a>
+        <a class="secondary-btn" href="/api/tls/ca.pem">Install iOS Root CA (Optional)</a>
+      </div>
+    </section>
+
     <!-- Main Full-Duplex Visualizer & Controls -->
     <main class="live-stage">
       <!-- Animated Voice Orb -->

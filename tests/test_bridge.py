@@ -694,5 +694,22 @@ def test_cli_entrypoints(tmp_path: Path) -> None:
     assert cli_main(["hw-mic", "--list-devices"]) == 0
 
     with patch("uvicorn.run") as mock_uvicorn:
-        assert cli_main(["serve", "--host", "127.0.0.1", "--port", "9000"]) == 0
+        assert (
+            cli_main(["serve", "--host", "127.0.0.1", "--port", "9000", "--no-https"])
+            == 0
+        )
         mock_uvicorn.assert_called_once()
+
+
+def test_tls_certificate_generation_and_ca_download(
+    client: TestClient, tmp_path: Path
+) -> None:
+    resp = client.get("/api/tls/ca.pem")
+    assert resp.status_code == 200
+    assert b"BEGIN CERTIFICATE" in resp.content
+
+    # Second call reuses existing cached certificate
+    resp2 = client.get("/api/tls/ca.pem")
+    assert resp2.status_code == 200
+    assert resp2.content == resp.content
+

@@ -59,6 +59,17 @@ const customRoomInput = document.getElementById('customRoomInput');
 const addCustomRoomBtn = document.getElementById('addCustomRoomBtn');
 const waveformCanvas = document.getElementById('waveformCanvas');
 const canvasCtx = waveformCanvas.getContext('2d');
+const secureContextBanner = document.getElementById('secureContextBanner');
+const openHttpsLink = document.getElementById('openHttpsLink');
+const httpsTargetUrl = `https://${window.location.hostname}:8443`;
+if (openHttpsLink) {
+  openHttpsLink.href = httpsTargetUrl;
+}
+if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  if (secureContextBanner) {
+    secureContextBanner.hidden = false;
+  }
+}
 
 // State
 let ws = null;
@@ -250,6 +261,16 @@ function connectWebSocket() {
 async function toggleLiveMicrophone() {
   if (isLiveMicActive) {
     stopLiveMicrophone();
+    return;
+  }
+
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (secureContextBanner) secureContextBanner.hidden = false;
+    appendMessage(
+      'system',
+      `Mobile browsers require HTTPS for microphone access. Tap "Open Secure HTTPS (:8443)" above or go to ${httpsTargetUrl}`
+    );
+    window.location.href = httpsTargetUrl;
     return;
   }
 

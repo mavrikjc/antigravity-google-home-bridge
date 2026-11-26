@@ -149,6 +149,42 @@ body {
   cursor: pointer;
 }
 
+/* Secure Context Banner for Mobile HTTP */
+.secure-banner {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid #f59e0b;
+  border-radius: 16px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.secure-banner[hidden] {
+  display: none;
+}
+
+.secure-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.secure-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.secure-banner-actions a {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
 /* Full-Duplex Voice Orb */
 .live-stage {
   display: flex;

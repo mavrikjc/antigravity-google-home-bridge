@@ -20,6 +20,7 @@ from agy_home_bridge.gemini_live import FullDuplexLiveBridge
 from agy_home_bridge.hardware_mic import HardwareMicDaemon
 from agy_home_bridge.mcp_server import BridgeMCPServer
 from agy_home_bridge.smart_home import SmartHomeFulfillment
+from agy_home_bridge.tls import ensure_lan_tls_certificates
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +116,21 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
             "active_room": cast_manager.active_room,
             "routing_mode": cast_manager.routing_mode,
             "lan_url": cfg.base_lan_url,
+            "https_lan_url": cfg.https_lan_url,
+            "https_port": cfg.bridge_https_port,
             "gemini_configured": bool(cfg.gemini_api_key),
             "speakers_count": len(cast_manager.list_speakers()),
             "hardware_mics": hw_mic.list_audio_input_devices(),
         }
+
+    @app.get("/api/tls/ca.pem")
+    async def download_root_ca() -> FileResponse:
+        ca_cert, _, _ = ensure_lan_tls_certificates(cfg.certs_dir, cfg.resolved_lan_ip)
+        return FileResponse(
+            str(ca_cert),
+            media_type="application/x-x509-ca-cert",
+            filename="Antigravity-Home-Root-CA.crt",
+        )
 
     @app.get("/api/speakers")
     async def get_speakers(refresh: bool = False) -> dict[str, Any]:

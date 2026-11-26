@@ -59,6 +59,8 @@ class BridgeSettings(BaseSettings):
     host_lan_ip: str = Field(default="", alias="HOST_LAN_IP")
     bridge_host: str = Field(default="0.0.0.0", alias="BRIDGE_HOST")
     bridge_port: int = Field(default=8765, alias="BRIDGE_PORT")
+    bridge_https_port: int = Field(default=8443, alias="BRIDGE_HTTPS_PORT")
+    enable_https: bool = Field(default=True, alias="ENABLE_HTTPS")
 
     # Google Home / Cast multi-room settings
     default_cast_room: str = Field(default="Whole Home", alias="DEFAULT_CAST_ROOM")
@@ -97,6 +99,18 @@ class BridgeSettings(BaseSettings):
     def base_lan_url(self) -> str:
         """Return base HTTP URL reachable by Google Home speakers on the LAN."""
         return f"http://{self.resolved_lan_ip}:{self.bridge_port}"
+
+    @property
+    def https_lan_url(self) -> str:
+        """Return HTTPS URL for mobile browsers (iOS Safari / Android Chrome) that require a Secure Context for mic access."""
+        return f"https://{self.resolved_lan_ip}:{self.bridge_https_port}"
+
+    @property
+    def certs_dir(self) -> Path:
+        """Directory for storing the auto-generated LAN Root CA and TLS certificates."""
+        path = Path(self.agy_app_data_dir).parent / "certs"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def tts_cache_dir(self) -> Path:
