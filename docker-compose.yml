@@ -1,0 +1,16 @@
+services:
+  agy-home-bridge:
+    build: .
+    container_name: agy-home-bridge
+    restart: unless-stopped
+    # Host networking is required on Proxmox / Linux so mDNS (Chromecast discovery)
+    # and Google Home LAN audio streaming work seamlessly across rooms.
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./data:/var/lib/agy-home-bridge
+      - ${AGY_WORKSPACE_DIR:-/opt/antigravity-workspace}:/opt/antigravity-workspace
+    # Optional: pass through USB wireless lapel microphone receiver (/dev/snd) on Proxmox
+    devices:
+      - /dev/snd:/dev/snd

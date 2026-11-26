@@ -1,0 +1,9 @@
+{
+  "name": "Antigravity Live · Google Home Bridge",
+  "short_name": "AGY Live",
+  "description": "Always-On Full-Duplex Google Antigravity Live Voice & Google Home Bridge",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19"
+}

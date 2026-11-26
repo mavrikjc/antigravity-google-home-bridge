@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- MANDATORY: Declare support for both light and dark themes to avoid FOUC -->
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0b0f19">
+  <title>Antigravity Live · Google Home Bridge</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="top-bar">
+      <div class="brand">
+        <span class="status-dot" id="connDot" aria-hidden="true"></span>
+        <div>
+          <h1 class="brand-title">Antigravity Live</h1>
+          <p class="brand-subtitle" id="statusSubtitle">Connecting to Proxmox Bridge…</p>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button type="button" class="pill-button" id="openSettingsBtn" aria-label="Open Room and Audio Settings">
+          <span class="room-badge-icon" aria-hidden="true">🔊</span>
+          <span id="activeRoomLabel">Whole Home</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Full-Duplex Visualizer & Controls -->
+    <main class="live-stage">
+      <!-- Animated Voice Orb -->
+      <section class="orb-section" aria-label="Full-Duplex Voice Visualizer">
+        <div class="orb-wrapper" id="orbWrapper" data-state="idle">
+          <canvas id="waveformCanvas" width="260" height="260" aria-hidden="true"></canvas>
+          <button type="button" class="orb-core-btn" id="micToggleBtn" aria-pressed="false">
+            <span class="orb-icon" id="orbIcon" aria-hidden="true">🎙️</span>
+            <span class="orb-label" id="orbStateText">Tap to Go Live</span>
+          </button>
+        </div>
+        <p class="barge-hint" id="bargeHint">
+          Full-duplex ready · Speak naturally or tap to interrupt ("barge in") at any time
+        </p>
+      </section>
+
+      <!-- Quick Room Follow Bar -->
+      <section class="room-bar" aria-label="Google Home Room Switcher">
+        <div class="room-bar-header">
+          <span class="section-caption">Follow-Me Google Home Speaker</span>
+          <button type="button" class="ghost-btn" id="refreshSpeakersBtn">Scan LAN</button>
+        </div>
+        <div class="room-pills" id="roomPills" role="group" aria-label="Available Google Home Rooms">
+          <button type="button" class="room-pill active" data-room="Whole Home">Whole Home</button>
+          <button type="button" class="room-pill" data-room="Office">Office</button>
+          <button type="button" class="room-pill" data-room="Kitchen">Kitchen</button>
+          <button type="button" class="room-pill" data-room="Living Room">Living Room</button>
+          <button type="button" class="room-pill" data-room="Bedroom">Bedroom</button>
+        </div>
+      </section>
+
+      <!-- Live Conversation & Tool Execution Stream -->
+      <section class="transcript-panel" aria-label="Live Conversation Transcript">
+        <div class="transcript-feed" id="transcriptFeed" role="log" aria-live="polite">
+          <div class="msg msg-system">
+            <strong>Antigravity Home Bridge Ready.</strong> Walk from room to room with your phone, earbuds, or a Proxmox USB wireless lapel mic while Antigravity responds through your Google Home speakers.
+          </div>
+        </div>
+
+        <!-- Quick Text / Voice Command Composer -->
+        <form class="composer-bar" id="promptForm">
+          <input
+            type="text"
+            id="promptInput"
+            placeholder="Say or type a command (e.g. 'Follow me to the kitchen' or 'Check Proxmox status')…"
+            autocomplete="off"
+            aria-label="Send message to Antigravity Live"
+          >
+          <button type="button" class="secondary-btn" id="bargeInBtn" title="Interrupt current speech">
+            Stop
+          </button>
+          <button type="submit" class="primary-btn">Send</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Native Modal Dialog for Audio Routing & Google Home Settings (Modern Web Guidance compliant) -->
+  <dialog id="settingsDialog" closedby="any" aria-labelledby="settingsDialogTitle">
+    <div class="dialog-header">
+      <h1 id="settingsDialogTitle">Audio Routing &amp; Google Home Settings</h1>
+      <button type="button" class="icon-close-btn" id="closeSettingsBtn" aria-label="Close settings">✕</button>
+    </div>
+
+    <form method="dialog" class="dialog-body" id="settingsForm">
+      <fieldset class="field-group">
+        <legend>Voice Output Routing</legend>
+        <label class="radio-card">
+          <input type="radio" name="routingMode" value="both" checked autofocus>
+          <div>
+            <strong>Hybrid (Direct + Google Home Cast)</strong>
+            <small>Zero-latency audio on this device/earbuds plus room announcements on Google Home</small>
+          </div>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="routingMode" value="cast">
+          <div>
+            <strong>Google Home Room Speakers Only</strong>
+            <small>Best when wearing a clip-on wireless mic or walking hands-free around the house</small>
+          </div>
+        </label>
+        <label class="radio-card">
+          <input type="radio" name="routingMode" value="direct">
+          <div>
+            <strong>Direct Device / Bluetooth Only</strong>
+            <small>Lowest latency full-duplex audio directly to your phone, earbuds, or Bluetooth speaker</small>
+          </div>
+        </label>
+      </fieldset>
+
+      <div class="switch-row">
+        <label for="handsFreeAutoListen">
+          <strong>Continuous Hands-Free Auto-Listen (VAD)</strong>
+          <small>Keep microphone live as you move between rooms with automatic barge-in</small>
+        </label>
+        <input id="handsFreeAutoListen" type="checkbox" switch checked>
+      </div>
+
+      <div class="switch-row">
+        <label for="wakeLockToggle">
+          <strong>Keep Screen Awake in Pocket / Dock</strong>
+          <small>Prevent mobile browser from suspending the full-duplex WebSocket</small>
+        </label>
+        <input id="wakeLockToggle" type="checkbox" switch checked>
+      </div>
+
+      <div class="field-group">
+        <label for="customRoomInput"><strong>Add or Target Custom Google Home Speaker / Group</strong></label>
+        <div class="inline-input-row">
+          <input type="text" id="customRoomInput" placeholder="e.g. Patio Speaker or Upstairs Group">
+          <button type="button" class="secondary-btn" id="addCustomRoomBtn">Set Room</button>
+        </div>
+      </div>
+
+      <div class="dialog-footer">
+        <button type="submit" value="close" class="primary-btn">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

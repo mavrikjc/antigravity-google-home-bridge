@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables & secrets
+.env
+*.local
+
+# Runtime data & TTS cache
+.agy_home_data/
+tts_cache/
+*.mp3
+*.wav
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# macOS / Editor
+.DS_Store
+.idea/
+.vscode/
+.pytest_cache/
