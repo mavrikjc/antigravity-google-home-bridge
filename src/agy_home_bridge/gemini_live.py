@@ -248,7 +248,18 @@ class FullDuplexLiveBridge:
         turn_pcm_buffer = bytearray()
         turn_text_chunks: list[str] = []
 
-        async for response in session.receive():
+        async def _receive_across_turns() -> Any:
+            # google-genai's session.receive() ends after each turn (including tool-call
+            # turns), so keep re-entering it for the life of the session.
+            while True:
+                got_any = False
+                async for item in session.receive():
+                    got_any = True
+                    yield item
+                if not got_any:
+                    return
+
+        async for response in _receive_across_turns():
             server_content = getattr(response, "server_content", None)
             if server_content is not None:
                 if getattr(server_content, "interrupted", False):

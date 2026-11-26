@@ -637,17 +637,25 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
     class FakeSessionReceiver:
         def __init__(self) -> None:
             self.send_tool_response = AsyncMock()
+            self._calls = 0
 
         def receive(self):
+            # Mirror google-genai: each receive() call yields one turn, then a
+            # final call yields nothing when the session has closed.
+            self._calls += 1
+            turns = [[resp_interrupted], [resp_turn]]
+            items = turns[self._calls - 1] if self._calls <= len(turns) else []
+
             async def _gen():
-                yield resp_interrupted
-                yield resp_turn
+                for item in items:
+                    yield item
 
             return _gen()
 
     receiver_session = FakeSessionReceiver()
     with patch.object(cast_mgr, "cast_pcm_audio", new_callable=AsyncMock):
         await bridge._forward_gemini_to_client(fake_ws, receiver_session)
+    assert receiver_session._calls == 3  # kept receiving across turns
     assert cast_mgr.active_room == "Kitchen"
     assert receiver_session.send_tool_response.await_count == 1
 
