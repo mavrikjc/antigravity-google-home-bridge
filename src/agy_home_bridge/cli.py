@@ -34,12 +34,22 @@ async def _serve_dual_http_https(
     def _make_servers(port: int, **ssl_kwargs: str) -> list[uvicorn.Server]:
         return [
             uvicorn.Server(
-                uvicorn.Config(app, host=h, port=port, log_level="info", **ssl_kwargs)
+                uvicorn.Config(
+                    app,
+                    host=h,
+                    port=port,
+                    log_level="info",
+                    lifespan="off",
+                    **ssl_kwargs,
+                )
             )
             for h in bind_hosts
         ]
 
     servers = _make_servers(http_port)
+    # All listeners share one app: run the startup/shutdown lifespan (LAN discovery,
+    # hardware-mic daemon) exactly once, on the first listener.
+    servers[0].config.lifespan = "on"
 
     if enable_https:
         _, cert_path, key_path = ensure_lan_tls_certificates(
