@@ -605,7 +605,8 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
     fake_session = AsyncMock()
     with pytest.raises(asyncio.CancelledError):
         await bridge._forward_client_to_gemini(fake_ws, fake_session)
-    assert fake_session.send.await_count >= 2
+    fake_session.send_realtime_input.assert_awaited_once()
+    fake_session.send_client_content.assert_awaited_once()
 
     # Test _forward_gemini_to_client with audio inline_data, text, interruption, and tool_call
     fake_part_audio = MagicMock()
@@ -635,7 +636,7 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
 
     class FakeSessionReceiver:
         def __init__(self) -> None:
-            self.send = AsyncMock()
+            self.send_tool_response = AsyncMock()
 
         def receive(self):
             async def _gen():
@@ -648,7 +649,7 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
     with patch.object(cast_mgr, "cast_pcm_audio", new_callable=AsyncMock):
         await bridge._forward_gemini_to_client(fake_ws, receiver_session)
     assert cast_mgr.active_room == "Kitchen"
-    assert receiver_session.send.await_count == 1
+    assert receiver_session.send_tool_response.await_count == 1
 
 
 # ============================================================================

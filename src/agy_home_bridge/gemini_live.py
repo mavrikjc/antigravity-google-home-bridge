@@ -76,14 +76,11 @@ class FullDuplexLiveBridge:
             from google import genai
             from google.genai import types as genai_types
 
+            use_vertex = self.config.gemini_use_vertex
             client = genai.Client(
                 api_key=api_key,
-                vertexai=api_key.startswith("AQ."),
-                http_options=(
-                    None
-                    if api_key.startswith("AQ.")
-                    else {"api_version": "v1alpha"}
-                ),
+                vertexai=use_vertex,
+                http_options=None if use_vertex else {"api_version": "v1beta"},
             )
 
             tool_declarations = [
@@ -198,18 +195,29 @@ class FullDuplexLiveBridge:
             msg_type = msg.get("type")
 
             if msg_type == "audio_chunk":
+                from google.genai import types as genai_types
+
                 pcm_bytes = base64.b64decode(msg["pcm_b64"])
-                await session.send(
-                    input={"data": pcm_bytes, "mime_type": "audio/pcm"},
+                await session.send_realtime_input(
+                    audio=genai_types.Blob(
+                        data=pcm_bytes, mime_type="audio/pcm;rate=16000"
+                    ),
                 )
             elif msg_type == "text":
+                from google.genai import types as genai_types
+
                 text = msg.get("text", "").strip()
                 if text:
                     await self._send_json(
                         websocket,
                         {"type": "transcript", "role": "user", "text": text},
                     )
-                    await session.send(input=text, end_of_turn=True)
+                    await session.send_client_content(
+                        turns=genai_types.Content(
+                            role="user", parts=[genai_types.Part(text=text)]
+                        ),
+                        turn_complete=True,
+                    )
             elif msg_type == "barge_in":
                 await self._send_json(websocket, {"type": "interrupted"})
             elif msg_type == "set_room":
@@ -361,11 +369,7 @@ class FullDuplexLiveBridge:
             )
 
         if function_responses:
-            await session.send(
-                input=genai_types.LiveClientToolResponse(
-                    function_responses=function_responses
-                )
-            )
+            await session.send_tool_response(function_responses=function_responses)
 
     async def _run_text_and_vad_duplex_loop(self, websocket: WebSocket) -> None:
         """Fallback full-duplex WebSocket loop supporting browser Web Speech / text / barge-in + Google Home Cast."""

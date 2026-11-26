@@ -199,7 +199,7 @@ class AntigravityAgentEngine:
             }
             if self.config.gemini_api_key:
                 kwargs["api_key"] = self.config.gemini_api_key
-                if self.config.gemini_api_key.startswith("AQ."):
+                if self.config.gemini_use_vertex:
                     kwargs["vertex"] = True
             if self.conversation_id:
                 kwargs["conversation_id"] = self.conversation_id
@@ -243,7 +243,7 @@ class AntigravityAgentEngine:
                 )
                 client = genai.Client(
                     api_key=api_key,
-                    vertexai=api_key.startswith("AQ."),
+                    vertexai=self.config.gemini_use_vertex,
                 )
                 tools = self.build_custom_tools()
 

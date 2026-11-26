@@ -33,8 +33,10 @@ class BridgeSettings(BaseSettings):
     # Gemini & Antigravity SDK
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_live_model: str = Field(
-        default="gemini-2.0-flash-exp", alias="GEMINI_LIVE_MODEL"
+        default="gemini-3.8-live", alias="GEMINI_LIVE_MODEL"
     )
+    # Set true only for Vertex AI Express Mode keys; AI Studio keys (AIza... or AQ...) use the Gemini Developer API.
+    gemini_use_vertex: bool = Field(default=False, alias="GEMINI_USE_VERTEX")
     gemini_live_voice: str = Field(default="Puck", alias="GEMINI_LIVE_VOICE")
 
     agy_workspace_dir: str = Field(
