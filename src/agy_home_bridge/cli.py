@@ -27,29 +27,32 @@ async def _serve_dual_http_https(
     """Run HTTP (:8765 for Google Home Cast) and HTTPS (:8443 for mobile Safari/Chrome mic) concurrently."""
     from agy_home_bridge.server import app
 
-    # Bind to "::" so both IPv4 (0.0.0.0) and IPv6 connections are accepted
-    bind_host = "::" if host == "0.0.0.0" else host
-    http_cfg = uvicorn.Config(app, host=bind_host, port=http_port, log_level="info")
-    http_server = uvicorn.Server(http_cfg)
+    # asyncio sets IPV6_V6ONLY when binding "::", so a "::" listener does NOT accept IPv4.
+    # When asked for all interfaces, run separate IPv4 (0.0.0.0) and IPv6 (::) listeners.
+    bind_hosts = ["0.0.0.0", "::"] if host in ("0.0.0.0", "::") else [host]
 
-    if not enable_https:
-        await http_server.serve()
-        return
+    def _make_servers(port: int, **ssl_kwargs: str) -> list[uvicorn.Server]:
+        return [
+            uvicorn.Server(
+                uvicorn.Config(app, host=h, port=port, log_level="info", **ssl_kwargs)
+            )
+            for h in bind_hosts
+        ]
 
-    _, cert_path, key_path = ensure_lan_tls_certificates(
-        settings.certs_dir,
-        settings.resolved_lan_ip,
-    )
-    https_cfg = uvicorn.Config(
-        app,
-        host=bind_host,
-        port=https_port,
-        ssl_certfile=str(cert_path),
-        ssl_keyfile=str(key_path),
-        log_level="info",
-    )
-    https_server = uvicorn.Server(https_cfg)
-    await asyncio.gather(http_server.serve(), https_server.serve())
+    servers = _make_servers(http_port)
+
+    if enable_https:
+        _, cert_path, key_path = ensure_lan_tls_certificates(
+            settings.certs_dir,
+            settings.resolved_lan_ip,
+        )
+        servers += _make_servers(
+            https_port,
+            ssl_certfile=str(cert_path),
+            ssl_keyfile=str(key_path),
+        )
+
+    await asyncio.gather(*(s.serve() for s in servers))
 
 
 def main(argv: list[str] | None = None) -> int:
