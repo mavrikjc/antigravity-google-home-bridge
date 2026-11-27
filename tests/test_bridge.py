@@ -5704,6 +5704,64 @@ async def test_t5_concurrent_background_tasks_out_of_order_completion_and_ask_st
     assert alpha_cancelled["agents"][0]["current_task"] is None
 
 
+@pytest.mark.asyncio
+async def test_speak_on_room_prefers_gemini_voice_and_falls_back_to_gtts(
+    test_settings: BridgeSettings, tmp_path: Path
+) -> None:
+    assert test_settings.gemini_live_voice == "Giro"
+    cast_mgr = GoogleHomeCastManager(test_settings)
+    cast_mgr.register_mock_speaker("Office speaker", host="192.168.1.121")
+    cast_mgr._chromecasts["Office speaker"] = MagicMock()
+
+    with (
+        patch.object(
+            cast_mgr,
+            "synthesize_gemini_pcm",
+            new_callable=AsyncMock,
+            return_value=b"\x01\x00" * 240,
+        ) as mock_synth,
+        patch.object(
+            cast_mgr,
+            "cast_pcm_audio",
+            new_callable=AsyncMock,
+            return_value={
+                "status": "casting",
+                "room": "Office speaker",
+                "media_url": "http://192.168.1.50:8765/api/tts/resp.wav",
+                "detail": "ok",
+            },
+        ) as mock_cast_pcm,
+        patch.object(cast_mgr, "generate_tts_file") as mock_gtts,
+    ):
+        res = await cast_mgr.speak_on_room("Task completed.", room_name="office")
+
+    mock_synth.assert_awaited_once_with("Task completed.")
+    mock_cast_pcm.assert_awaited_once()
+    mock_gtts.assert_not_called()
+    assert res["status"] == "casting"
+    assert res["voice"] == "Giro"
+
+    fake_mp3 = (tmp_path / "tts_cache" / "fallback.mp3").resolve()
+    fake_mp3.parent.mkdir(parents=True, exist_ok=True)
+    fake_mp3.write_bytes(b"MP3")
+
+    with (
+        patch.object(
+            cast_mgr,
+            "synthesize_gemini_pcm",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch.object(cast_mgr, "generate_tts_file", return_value=fake_mp3) as mock_gtts_fb,
+    ):
+        res_fb = await cast_mgr.speak_on_room("Fallback test", room_name="office")
+
+    mock_gtts_fb.assert_called_once_with("Fallback test")
+    assert res_fb["status"] == "casting"
+    assert res_fb["media_url"].endswith("/fallback.mp3")
+
+
+
 
 
 

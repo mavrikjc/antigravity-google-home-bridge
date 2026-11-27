@@ -763,14 +763,102 @@ class GoogleHomeCastManager:
                 return self.resolve_room_presence(target_query)["speaker"]
             return target_query
 
+    async def synthesize_gemini_pcm(self, text: str) -> bytes | None:
+        """Synthesize 24 kHz 16-bit mono PCM speech using the configured Gemini Live voice."""
+        api_key = (self.config.gemini_api_key or "").strip()
+        if not api_key or not text.strip():
+            return None
+
+        try:
+            from google import genai
+            from google.genai import types as genai_types
+
+            use_vertex = self.config.gemini_use_vertex
+            client = genai.Client(
+                api_key=api_key,
+                vertexai=use_vertex,
+                http_options=None if use_vertex else {"api_version": "v1beta"},
+            )
+            live_cfg = genai_types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                speech_config=genai_types.SpeechConfig(
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                            voice_name=self.config.gemini_live_voice
+                        )
+                    )
+                ),
+                system_instruction=genai_types.Content(
+                    parts=[
+                        genai_types.Part(
+                            text=(
+                                "You are a text-to-speech voice. Read the user's message "
+                                "aloud verbatim, naturally and briskly, without adding "
+                                "extra commentary."
+                            )
+                        )
+                    ]
+                ),
+            )
+
+            chunks: list[bytes] = []
+
+            async def _run_tts() -> bytes:
+                async with client.aio.live.connect(
+                    model=self.config.gemini_live_model,
+                    config=live_cfg,
+                ) as session:
+                    await session.send_client_content(
+                        turns=genai_types.Content(
+                            role="user",
+                            parts=[genai_types.Part(text=text)],
+                        ),
+                        turn_complete=True,
+                    )
+                    async for msg in session.receive():
+                        sc = getattr(msg, "server_content", None)
+                        if sc and sc.model_turn:
+                            for part in sc.model_turn.parts:
+                                inline = getattr(part, "inline_data", None)
+                                if inline and inline.data:
+                                    chunks.append(inline.data)
+                        if sc and sc.turn_complete:
+                            break
+                return b"".join(chunks)
+
+            pcm_bytes = await asyncio.wait_for(_run_tts(), timeout=15.0)
+            return pcm_bytes or None
+        except Exception as exc:
+            logger.warning(
+                "Gemini TTS synthesis failed (%s); falling back to gTTS", exc
+            )
+            return None
+
     async def speak_on_room(
         self,
         text: str,
         room_name: str | None = None,
         volume: float | None = None,
     ) -> dict[str, Any]:
-        """Generate TTS audio and cast it to the specified (or active) Google Home room speaker."""
+        """Generate TTS audio (Gemini Live voice when configured, else gTTS) and cast it."""
         resolved_name = self._resolve_speaker_name(room_name)
+
+        pcm_bytes = await self.synthesize_gemini_pcm(text)
+        if pcm_bytes:
+            cast_res = await self.cast_pcm_audio(
+                pcm_bytes,
+                sample_rate=24000,
+                room_name=resolved_name,
+                enqueue=False,
+            )
+            return {
+                "status": cast_res["status"],
+                "room": resolved_name,
+                "text": text,
+                "media_url": cast_res.get("media_url", ""),
+                "detail": cast_res.get("detail", ""),
+                "voice": self.config.gemini_live_voice,
+            }
 
         tts_path = await asyncio.to_thread(self.generate_tts_file, text)
         media_url = f"{self.config.base_lan_url}/api/tts/{tts_path.name}"

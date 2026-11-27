@@ -813,9 +813,16 @@ def mock_chromecast_env(monkeypatch: pytest.MonkeyPatch) -> CastEnvironmentSpy:
     import pychromecast
     import pychromecast.controllers.dashcast as dashcast_mod
 
+    async def _no_gemini_tts(self: Any, text: str) -> None:
+        return None
+
     monkeypatch.setattr(pychromecast, "get_chromecasts", _fake_get_chromecasts)
     monkeypatch.setattr(dashcast_mod, "DashCastController", _FakeDashCastController)
     monkeypatch.setattr("agy_home_bridge.cast_manager.gTTS", _FakeGTTS)
+    monkeypatch.setattr(
+        "agy_home_bridge.cast_manager.GoogleHomeCastManager.synthesize_gemini_pcm",
+        _no_gemini_tts,
+    )
     return spy
 
 
