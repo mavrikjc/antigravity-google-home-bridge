@@ -822,15 +822,20 @@ class GoogleHomeCastManager:
                                 inline = getattr(part, "inline_data", None)
                                 if inline and inline.data:
                                     chunks.append(inline.data)
-                        if sc and sc.turn_complete:
+                        if sc and (
+                            getattr(sc, "generation_complete", False)
+                            or sc.turn_complete
+                        ):
                             break
                 return b"".join(chunks)
 
-            pcm_bytes = await asyncio.wait_for(_run_tts(), timeout=15.0)
+            pcm_bytes = await asyncio.wait_for(_run_tts(), timeout=30.0)
             return pcm_bytes or None
         except Exception as exc:
             logger.warning(
-                "Gemini TTS synthesis failed (%s); falling back to gTTS", exc
+                "Gemini TTS synthesis failed (%s: %s); falling back to gTTS",
+                type(exc).__name__,
+                exc,
             )
             return None
 
