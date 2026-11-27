@@ -5918,6 +5918,15 @@ async def test_streaming_resampler_and_audio_stream_end_forwarding(
     assert len(out_16k) == 640 * 2  # 40ms @ 16kHz
     assert compute_pcm16_rms(out_16k) > compute_pcm16_rms(pcm_48k) * 2.5
 
+    # Verify 180Hz high-pass filter strongly attenuates 40Hz breath/rumble vs 1kHz speech
+    rumble_48k = struct.pack(
+        "<1920h",
+        *[int(4000 * math.sin(2.0 * math.pi * 40.0 * i / 48000.0)) for i in range(1920)],
+    )
+    hp_resampler = StreamingResampler(in_rate=48000, out_rate=16000, gain=1.0, highpass_hz=180.0)
+    rumble_out = hp_resampler.process(rumble_48k)
+    assert compute_pcm16_rms(rumble_out) < compute_pcm16_rms(rumble_48k) * 0.45
+
     # Verify audio_stream_end forwards audio_stream_end=True to Gemini Live session
     app = create_app(test_settings)
     bridge = app.state.live_bridge

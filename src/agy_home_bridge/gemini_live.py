@@ -594,12 +594,17 @@ class FullDuplexLiveBridge:
                 )
 
                 user_pcm_ring = bytearray()
+                user_turn_state: dict[str, Any] = {
+                    "has_transcript": False,
+                    "last_stream_end_at": 0.0,
+                }
                 client_to_gemini = asyncio.create_task(
                     self._forward_client_to_gemini(
                         websocket,
                         session,
                         local_emitted_event_ids=local_emitted_event_ids,
                         user_pcm_ring=user_pcm_ring,
+                        user_turn_state=user_turn_state,
                     )
                 )
                 gemini_to_client = asyncio.create_task(
@@ -608,6 +613,7 @@ class FullDuplexLiveBridge:
                         session,
                         local_emitted_event_ids,
                         user_pcm_ring=user_pcm_ring,
+                        user_turn_state=user_turn_state,
                     )
                 )
 
@@ -690,6 +696,7 @@ class FullDuplexLiveBridge:
         session: Any,
         local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
         user_pcm_ring: bytearray | None = None,
+        user_turn_state: dict[str, Any] | None = None,
     ) -> None:
         is_hardware_mic = False
         while True:
@@ -795,6 +802,16 @@ class FullDuplexLiveBridge:
                     else pcm_bytes
                 )
                 if user_pcm_ring is not None:
+                    if user_turn_state is not None:
+                        last_end = float(user_turn_state.get("last_stream_end_at") or 0.0)
+                        if (
+                            last_end > 0.0
+                            and not user_turn_state.get("has_transcript", False)
+                            and (time.monotonic() - last_end) >= 1.5
+                        ):
+                            # Prior gated burst produced no transcript: start fresh with zero stale noise
+                            user_pcm_ring.clear()
+                        user_turn_state["last_stream_end_at"] = 0.0
                     user_pcm_ring.extend(forward_pcm)
                     max_ring_bytes = 16000 * 2 * 15  # 15s @ 16kHz 16-bit mono
                     if len(user_pcm_ring) > max_ring_bytes:
@@ -805,10 +822,8 @@ class FullDuplexLiveBridge:
                     ),
                 )
             elif msg_type == "audio_stream_end":
-                if user_pcm_ring is not None and not self._voice_status == "speaking":
-                    # Avoid splicing unrelated earlier noise bursts into a future prompt WAV
-                    if len(user_pcm_ring) > 16000 * 2 * 6:
-                        del user_pcm_ring[:-16000 * 2 * 6]
+                if user_turn_state is not None:
+                    user_turn_state["last_stream_end_at"] = time.monotonic()
                 try:
                     await session.send_realtime_input(audio_stream_end=True)
                 except Exception as exc:
@@ -947,6 +962,7 @@ class FullDuplexLiveBridge:
         session: Any,
         local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
         user_pcm_ring: bytearray | None = None,
+        user_turn_state: dict[str, Any] | None = None,
     ) -> None:
         turn_pcm_buffer = bytearray()
         turn_text_chunks: list[str] = []
@@ -963,6 +979,9 @@ class FullDuplexLiveBridge:
             pcm_copy = bytes(user_pcm_ring)
             user_pcm_ring.clear()
             user_turn_has_transcript = False
+            if user_turn_state is not None:
+                user_turn_state["has_transcript"] = False
+                user_turn_state["last_stream_end_at"] = 0.0
             turn_transcript = "".join(user_turn_text_parts).strip()
             user_turn_text_parts.clear()
             trimmed = self._trim_pcm_silence(pcm_copy, sample_rate=16000)
@@ -1120,6 +1139,8 @@ class FullDuplexLiveBridge:
                         if isinstance(tr_text, str) and tr_text:
                             if role == "user":
                                 user_turn_has_transcript = True
+                                if user_turn_state is not None:
+                                    user_turn_state["has_transcript"] = True
                                 user_turn_text_parts.append(tr_text)
                             elif role == "agent":
                                 await _flush_user_prompt_audio()

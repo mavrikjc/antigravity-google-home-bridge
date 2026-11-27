@@ -35,12 +35,26 @@ def compute_pcm16_rms(pcm_bytes: bytes) -> float:
 
 
 class StreamingResampler:
-    """Stateful windowed-sinc anti-aliased resampler + soft-limited gain for 16-bit mono PCM."""
+    """Stateful windowed-sinc anti-aliased resampler + 180Hz high-pass + soft-limited gain."""
 
-    def __init__(self, in_rate: int, out_rate: int = 16000, gain: float = 1.0) -> None:
+    def __init__(
+        self,
+        in_rate: int,
+        out_rate: int = 16000,
+        gain: float = 1.0,
+        highpass_hz: float = 180.0,
+    ) -> None:
         self.in_rate = in_rate
         self.out_rate = out_rate
         self.gain = max(0.5, float(gain))
+        self.highpass_hz = max(0.0, float(highpass_hz))
+        self._hp_alpha = (
+            1.0 / (1.0 + (2.0 * math.pi * self.highpass_hz / float(out_rate)))
+            if self.highpass_hz > 0.0
+            else 0.0
+        )
+        self._hp_prev_x: float = 0.0
+        self._hp_prev_y: float = 0.0
         self._np: Any = None
         self._taps: Any = None
         self._tail: Any = None
@@ -60,17 +74,38 @@ class StreamingResampler:
         except ImportError:
             self._np = None
 
+    def _apply_highpass_float(self, samples: Any) -> Any:
+        """Stateful 1st-order IIR high-pass filter to remove breath puffs, collar rubs & HVAC rumble."""
+        if self._hp_alpha <= 0.0:
+            return samples
+        a = self._hp_alpha
+        prev_x = self._hp_prev_x
+        prev_y = self._hp_prev_y
+        out = [0.0] * len(samples)
+        for idx, x_val in enumerate(samples):
+            xf = float(x_val)
+            yf = a * (prev_y + xf - prev_x)
+            out[idx] = yf
+            prev_x = xf
+            prev_y = yf
+        self._hp_prev_x = prev_x
+        self._hp_prev_y = prev_y
+        return out
+
     def process(self, pcm_bytes: bytes) -> bytes:
         if len(pcm_bytes) < 2:
             return b""
         if self._np is None:
             down = downsample_pcm16_to_16k(pcm_bytes, self.in_rate)
-            if self.gain == 1.0 or not down:
+            if not down:
                 return down
             count = len(down) // 2
             samples = struct.unpack(f"<{count}h", down[: count * 2])
+            floats = [s / 32768.0 for s in samples]
+            if self._hp_alpha > 0.0:
+                floats = self._apply_highpass_float(floats)
             scaled = [
-                max(-32768, min(32767, round(s * self.gain))) for s in samples
+                max(-32768, min(32767, round(v * self.gain * 32767.0))) for v in floats
             ]
             return struct.pack(f"<{count}h", *scaled)
 
@@ -100,6 +135,9 @@ class StreamingResampler:
                 return b""
             src_idx = np.linspace(0.0, len(x) - 1, out_len, dtype=np.float32)
             y = np.interp(src_idx, np.arange(len(x), dtype=np.float32), x).astype(np.float32)
+
+        if self._hp_alpha > 0.0 and len(y) > 0:
+            y = np.asarray(self._apply_highpass_float(y.tolist()), dtype=np.float32)
 
         if self.gain != 1.0:
             y = y * self.gain
@@ -321,6 +359,8 @@ class HardwareMicDaemon:
                         )
                         gate_open = False
                         pre_roll.clear()
+                        consecutive_active = 0
+                        debounce_frames = 3  # 3 * 40ms = 120ms continuous speech required to open gate
 
                         async def _send_chunk(chunk: bytes) -> None:
                             await ws.send(
@@ -361,14 +401,20 @@ class HardwareMicDaemon:
 
                             if rms >= vad_threshold:
                                 last_speech_at = now
-                                if not gate_open:
-                                    gate_open = True
-                                    self.gate_open = True
-                                    for buffered in pre_roll:
-                                        await _send_chunk(buffered)
-                                    pre_roll.clear()
-                                await _send_chunk(pcm_chunk)
+                                if gate_open:
+                                    await _send_chunk(pcm_chunk)
+                                else:
+                                    pre_roll.append(pcm_chunk)
+                                    consecutive_active += 1
+                                    if consecutive_active >= debounce_frames:
+                                        gate_open = True
+                                        self.gate_open = True
+                                        for buffered in pre_roll:
+                                            await _send_chunk(buffered)
+                                        pre_roll.clear()
+                                        consecutive_active = 0
                             elif gate_open:
+                                consecutive_active = 0
                                 await _send_chunk(pcm_chunk)
                                 if (now - last_speech_at) >= hangover_sec:
                                     gate_open = False
@@ -377,6 +423,7 @@ class HardwareMicDaemon:
                                         json.dumps({"type": "audio_stream_end"})
                                     )
                             else:
+                                consecutive_active = 0
                                 self.gate_open = False
                                 pre_roll.append(pcm_chunk)
                 except Exception as exc:
