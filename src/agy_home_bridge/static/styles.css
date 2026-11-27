@@ -209,6 +209,18 @@ p, small {
   margin: 0.15rem 0 0;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mute-pill[data-muted="true"] {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+
 .pill-button {
   display: inline-flex;
   align-items: center;

@@ -88,11 +88,39 @@ class FullDuplexLiveBridge:
             else getattr(agent_engine, "project_manager", None)
         )
         self._voice_status: str = "idle"
+        self._voice_muted: bool = False
 
     @property
     def voice_status(self) -> str:
-        """Current live voice status ('idle', 'listening', 'thinking', 'speaking')."""
-        return self._voice_status
+        """Current live voice status ('idle', 'listening', 'thinking', 'speaking', 'muted')."""
+        return "muted" if self._voice_muted else self._voice_status
+
+    @property
+    def voice_muted(self) -> bool:
+        """True when global voice input is muted."""
+        return self._voice_muted
+
+    async def set_voice_muted(self, muted: bool) -> bool:
+        """Set global voice mute state and broadcast to EventHub (/ws/hud and /ws/live)."""
+        self._voice_muted = bool(muted)
+        if self._voice_muted:
+            self._on_live_interrupted()
+        effective = "muted" if self._voice_muted else (self._voice_status or "listening")
+        if self.event_hub is not None:
+            target = self._voice_status_target()
+            await self.event_hub.publish(
+                "voice_status",
+                project_id=target.get("project_id"),
+                project_name=target.get("project_name"),
+                short_name=target.get("short_name"),
+                agent_id=target.get("agent_id"),
+                project_agent=target.get("project_agent"),
+                conversation_id=target.get("conversation_id"),
+                status=effective,
+                voice_status=effective,
+                voice_muted=self._voice_muted,
+            )
+        return self._voice_muted
 
     def _voice_status_target(self) -> dict[str, Any]:
         if self.project_manager is not None:
@@ -124,6 +152,34 @@ class FullDuplexLiveBridge:
             )
         except Exception as exc:
             logger.debug("Failed to publish voice_status '%s': %s", state, exc)
+
+    async def _publish_transcript(
+        self,
+        role: str,
+        text: str,
+        partial: bool = False,
+        local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
+    ) -> None:
+        """Broadcast user/agent speech transcript to EventHub (/ws/hud & other PWAs)."""
+        if self.event_hub is None or not text:
+            return
+        target = self._voice_status_target()
+        ev = await self.event_hub.publish(
+            "transcript",
+            project_id=target.get("project_id"),
+            project_name=target.get("project_name"),
+            short_name=target.get("short_name"),
+            agent_id=target.get("agent_id"),
+            project_agent=target.get("project_agent"),
+            conversation_id=target.get("conversation_id"),
+            role=role,
+            text=text,
+            partial=partial,
+        )
+        if local_emitted_event_ids is not None and isinstance(ev, dict):
+            ev_id = ev.get("event_id")
+            if isinstance(ev_id, str) and ev_id:
+                local_emitted_event_ids.add(ev_id)
 
     async def _set_voice_status(self, state: str, **extra: Any) -> None:
         self._voice_status = state
@@ -430,7 +486,9 @@ class FullDuplexLiveBridge:
                     )
                 )
                 gemini_to_client = asyncio.create_task(
-                    self._forward_gemini_to_client(websocket, session)
+                    self._forward_gemini_to_client(
+                        websocket, session, local_emitted_event_ids
+                    )
                 )
 
                 done: set[asyncio.Task[Any]] = set()
@@ -551,6 +609,19 @@ class FullDuplexLiveBridge:
                     is_hardware_mic = True
                 continue
 
+            if msg_type == "set_mute":
+                muted = bool(msg.get("muted", False))
+                await self.set_voice_muted(muted)
+                await self._send_json(
+                    websocket,
+                    {
+                        "type": "status",
+                        "state": self.voice_status,
+                        "voice_muted": self._voice_muted,
+                    },
+                )
+                continue
+
             if msg_type == "audio_chunk":
                 raw_b64 = msg.get("pcm_b64")
                 if not isinstance(raw_b64, str):
@@ -595,10 +666,11 @@ class FullDuplexLiveBridge:
                 from google.genai import types as genai_types
 
                 # Prevent echo loop on wearable/USB mics without hardware AEC by muting
-                # mic audio to digital silence while Google Home is speaking.
+                # mic audio to digital silence while Google Home is speaking or globally muted.
                 forward_pcm = (
                     bytes(len(pcm_bytes))
-                    if is_hardware_mic and self.cast_manager.is_casting_audio
+                    if self._voice_muted
+                    or (is_hardware_mic and self.cast_manager.is_casting_audio)
                     else pcm_bytes
                 )
                 await session.send_realtime_input(
@@ -624,6 +696,12 @@ class FullDuplexLiveBridge:
                     await self._send_json(
                         websocket,
                         {"type": "transcript", "role": "user", "text": text},
+                    )
+                    await self._publish_transcript(
+                        "user",
+                        text,
+                        partial=False,
+                        local_emitted_event_ids=local_emitted_event_ids,
                     )
                     await session.send_client_content(
                         turns=genai_types.Content(
@@ -729,7 +807,10 @@ class FullDuplexLiveBridge:
                 pass
 
     async def _forward_gemini_to_client(
-        self, websocket: WebSocket, session: Any
+        self,
+        websocket: WebSocket,
+        session: Any,
+        local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
     ) -> None:
         turn_pcm_buffer = bytearray()
         turn_text_chunks: list[str] = []
@@ -824,6 +905,12 @@ class FullDuplexLiveBridge:
                                     "partial": True,
                                 },
                             )
+                            await self._publish_transcript(
+                                role,
+                                tr_text,
+                                partial=True,
+                                local_emitted_event_ids=local_emitted_event_ids,
+                            )
 
                     model_turn = getattr(server_content, "model_turn", None)
                     if model_turn is not None:
@@ -857,6 +944,12 @@ class FullDuplexLiveBridge:
                                         "role": "agent",
                                         "text": part_text,
                                     },
+                                )
+                                await self._publish_transcript(
+                                    "agent",
+                                    part_text,
+                                    partial=False,
+                                    local_emitted_event_ids=local_emitted_event_ids,
                                 )
 
                     # Flush mid-turn only for very long (>8s) monologues so normal replies

@@ -603,3 +603,28 @@ p, dd {
     color: HighlightText;
   }
 }
+
+/* Muted voice pill + User/JARVIS speech transcript cards */
+.hud-voice-pill[data-voice-status="muted"] {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+
+.hud-stream-item[data-type="speech_user"] {
+  border-left: 4px solid #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.hud-stream-item[data-type="speech_agent"] {
+  border-left: 4px solid #10b981;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.hud-stream-item[data-type="speech_user"] .hud-stream-type {
+  color: #38bdf8;
+}
+
+.hud-stream-item[data-type="speech_agent"] .hud-stream-type {
+  color: #34d399;
+}

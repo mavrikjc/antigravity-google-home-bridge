@@ -126,6 +126,12 @@ class CastHudRequest(BaseModel):
     tv: str | None = Field(default=None, description="Optional TV name override.")
 
 
+class VoiceMuteRequest(BaseModel):
+    """Payload for `/api/voice/mute`."""
+
+    muted: bool = Field(..., description="Whether global voice input should be muted.")
+
+
 def _strict_json_loads(raw_bytes: bytes) -> Any:
     """Decode UTF-8 JSON bytes while rejecting non-standard NaN/Infinity constants."""
     def _reject_constant(val: str) -> Any:
@@ -245,6 +251,7 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
             "active_agent_id": proj_summary.get("active_agent_id"),
             "active_project_agent": proj_summary.get("active_project_agent"),
             "voice_status": live_bridge.voice_status,
+            "voice_muted": live_bridge.voice_muted,
         }
 
     @app.get("/api/tls/ca.pem")
@@ -378,6 +385,22 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
         )
         return {"status": "ok", **selection}
 
+    @app.get("/api/voice/mute")
+    async def get_voice_mute() -> dict[str, Any]:
+        return {
+            "voice_muted": live_bridge.voice_muted,
+            "voice_status": live_bridge.voice_status,
+        }
+
+    @app.post("/api/voice/mute")
+    async def set_voice_mute(req: VoiceMuteRequest) -> dict[str, Any]:
+        muted = await live_bridge.set_voice_muted(req.muted)
+        return {
+            "status": "ok",
+            "voice_muted": muted,
+            "voice_status": live_bridge.voice_status,
+        }
+
     @app.post("/api/cast/hud")
     async def cast_hud(
         req: CastHudRequest = Body(default_factory=CastHudRequest),
@@ -494,6 +517,7 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
                 project_manager,
                 cast_manager,
                 voice_status=live_bridge.voice_status,
+                voice_muted=live_bridge.voice_muted,
             )
             await websocket.send_text(safe_json_dumps(snapshot))
 

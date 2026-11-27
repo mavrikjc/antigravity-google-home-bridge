@@ -59,6 +59,7 @@ function setVoiceStatus(statusText) {
     listening: '◉',
     thinking: '◈',
     speaking: '▶',
+    muted: '🔇',
   };
   if (hudVoiceStatus) {
     hudVoiceStatus.dataset.voiceStatus = normalized;
@@ -338,6 +339,39 @@ function appendStreamItem(evType, scope, bodyText, timestamp = null, tokenKey = 
   return li;
 }
 
+let openHudTranscript = null;
+
+function appendHudTranscript(ev) {
+  const role = ev.role === 'user' ? 'user' : 'agent';
+  const text = String(ev.text || '');
+  if (!text) return;
+  const partial = Boolean(ev.partial);
+  const label = role === 'user' ? 'You' : 'JARVIS';
+  const evType = role === 'user' ? 'speech_user' : 'speech_agent';
+
+  if (partial && openHudTranscript && openHudTranscript.role === role && openHudTranscript.el.isConnected) {
+    openHudTranscript.text += text;
+    if (openHudTranscript.text.length > 1400) {
+      openHudTranscript.text = `…${openHudTranscript.text.slice(-1300)}`;
+    }
+    openHudTranscript.bodyEl.textContent = openHudTranscript.text;
+    hudActivityStream.scrollTop = hudActivityStream.scrollHeight;
+    return;
+  }
+
+  const li = appendStreamItem(evType, label, text, ev.timestamp);
+  if (partial && li) {
+    openHudTranscript = {
+      role,
+      el: li,
+      bodyEl: li.querySelector('.hud-stream-body'),
+      text,
+    };
+  } else {
+    openHudTranscript = null;
+  }
+}
+
 function coalesceHudToken(ev) {
   const key = `${ev.project_id || 'default'}:${ev.agent_id || '101'}:${ev.task_id || 'stream'}`;
   const chunk = ev.text || '';
@@ -594,6 +628,11 @@ function handleHudEvent(ev, replay = false) {
 
     case 'token': {
       coalesceHudToken(ev);
+      break;
+    }
+
+    case 'transcript': {
+      appendHudTranscript(ev);
       break;
     }
 

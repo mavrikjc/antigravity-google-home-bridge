@@ -52,6 +52,9 @@ const orbStateText = document.getElementById('orbStateText');
 const roomPills = document.getElementById('roomPills');
 const refreshSpeakersBtn = document.getElementById('refreshSpeakersBtn');
 const activeTvLabel = document.getElementById('activeTvLabel');
+const muteVoiceBtn = document.getElementById('muteVoiceBtn');
+const muteVoiceIcon = document.getElementById('muteVoiceIcon');
+const muteVoiceLabel = document.getElementById('muteVoiceLabel');
 const castHudBtn = document.getElementById('castHudBtn');
 const castHudFeedback = document.getElementById('castHudFeedback');
 const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
@@ -88,6 +91,34 @@ if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevice
 // State
 let ws = null;
 let isLiveMicActive = false;
+let isVoiceMuted = false;
+
+function updateMuteButton(muted) {
+  isVoiceMuted = Boolean(muted);
+  if (!muteVoiceBtn) return;
+  muteVoiceBtn.dataset.muted = isVoiceMuted ? 'true' : 'false';
+  muteVoiceBtn.setAttribute('aria-pressed', isVoiceMuted ? 'true' : 'false');
+  if (muteVoiceIcon) muteVoiceIcon.textContent = isVoiceMuted ? '🔇' : '🎙️';
+  if (muteVoiceLabel) muteVoiceLabel.textContent = isVoiceMuted ? 'Muted' : 'Mute';
+}
+
+if (muteVoiceBtn) {
+  muteVoiceBtn.addEventListener('click', async () => {
+    const nextMuted = !isVoiceMuted;
+    updateMuteButton(nextMuted);
+    try {
+      const res = await fetch('/api/voice/mute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ muted: nextMuted }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        updateMuteButton(Boolean(data.voice_muted));
+      }
+    } catch (_) {}
+  });
+}
 let audioCtx = null; // playback context (24 kHz Gemini audio)
 let captureCtx = null; // mic capture context (device-native rate)
 let serverMode = null; // 'gemini-live-native-audio' when the server streams mic audio to Gemini
@@ -1085,8 +1116,20 @@ function handleEventHubMessage(data) {
     return true;
   }
 
+  if (data.type === 'transcript') {
+    appendTranscript(data.role === 'user' ? 'user' : 'agent', data.text, Boolean(data.partial));
+    return true;
+  }
+
   if (data.type === 'voice_status') {
     voiceStatus = data.voice_status || data.status || voiceStatus;
+    if (typeof data.voice_muted === 'boolean') {
+      updateMuteButton(data.voice_muted);
+    } else if (voiceStatus === 'muted') {
+      updateMuteButton(true);
+    } else if (voiceStatus === 'listening' || voiceStatus === 'speaking' || voiceStatus === 'thinking') {
+      updateMuteButton(false);
+    }
     if (data.active_room) updateRoomPills(data.active_room);
     return true;
   }
@@ -1127,6 +1170,9 @@ function connectWebSocket() {
       }
       if (data.state) {
         voiceStatus = data.state;
+      }
+      if (typeof data.voice_muted === 'boolean') {
+        updateMuteButton(data.voice_muted);
       }
       statusSubtitle.textContent = `Live (${data.state || 'ready'}) · Speaker: ${activeRoom || 'Whole Home'}`;
       if (data.state === 'thinking') {

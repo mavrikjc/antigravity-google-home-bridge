@@ -699,12 +699,30 @@ def test_pcm16_rms_and_hardware_mic_listing(test_settings: BridgeSettings) -> No
         daemon.config.hw_mic_device_name = "Lark M2"
         assert daemon._resolve_input_device(fake_sd) == 0
 
-    # Verify 48kHz -> 16kHz 3:1 downsampling
     import struct
     pcm_48k = struct.pack("<6h", 1000, 1000, 1000, -2000, -2000, -2000)
     pcm_16k = downsample_pcm16_to_16k(pcm_48k, 48000)
     assert struct.unpack("<2h", pcm_16k) == (1000, -2000)
     daemon.stop()
+
+
+def test_voice_mute_and_hud_transcript_events(client: TestClient) -> None:
+    """Verify /api/voice/mute (Issue #5) and transcript EventHub broadcasting (Issues #6 & #7)."""
+    mute_resp = client.post("/api/voice/mute", json={"muted": True})
+    assert mute_resp.status_code == 200
+    assert mute_resp.json()["voice_muted"] is True
+    assert mute_resp.json()["voice_status"] == "muted"
+    assert client.get("/api/health").json()["voice_muted"] is True
+
+    with client.websocket_connect("/ws/hud") as hud_ws:
+        snap = hud_ws.receive_json()
+        assert snap["type"] == "hud_snapshot"
+        assert snap["voice_muted"] is True
+        assert snap["voice_status"] == "muted"
+
+    unmute_resp = client.post("/api/voice/mute", json={"muted": False})
+    assert unmute_resp.status_code == 200
+    assert unmute_resp.json()["voice_muted"] is False
 
 
 def test_cli_entrypoints(tmp_path: Path) -> None:
@@ -825,6 +843,7 @@ async def test_event_hub_publish_subscribe_and_history_bounds() -> None:
         "tool_call",
         "tool_result",
         "token",
+        "transcript",
         "task_started",
         "task_completed",
         "task_failed",
