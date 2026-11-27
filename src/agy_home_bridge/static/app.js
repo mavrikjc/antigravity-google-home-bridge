@@ -16,6 +16,7 @@ const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 
 openSettingsBtn.addEventListener('click', () => {
   settingsDialog.showModal();
+  startAudioSettingsPolling();
 });
 
 closeSettingsBtn.addEventListener('click', () => {
@@ -40,6 +41,7 @@ if (!('closedBy' in HTMLDialogElement.prototype)) {
 
 settingsDialog.addEventListener('close', () => {
   settingsDialog.returnValue = '';
+  stopAudioSettingsPolling();
 });
 
 // UI Elements
@@ -54,6 +56,162 @@ const refreshSpeakersBtn = document.getElementById('refreshSpeakersBtn');
 const activeTvLabel = document.getElementById('activeTvLabel');
 const muteVoiceBtn = document.getElementById('muteVoiceBtn');
 const voiceSelect = document.getElementById('voiceSelect');
+const micLevelFill = document.getElementById('micLevelFill');
+const micThresholdMarker = document.getElementById('micThresholdMarker');
+const micGateBadge = document.getElementById('micGateBadge');
+const calibrateMicBtn = document.getElementById('calibrateMicBtn');
+const calibrateMicStatus = document.getElementById('calibrateMicStatus');
+const micGainSlider = document.getElementById('micGainSlider');
+const micGainVal = document.getElementById('micGainVal');
+const micVadSlider = document.getElementById('micVadSlider');
+const micVadVal = document.getElementById('micVadVal');
+const micHangoverSlider = document.getElementById('micHangoverSlider');
+const micHangoverVal = document.getElementById('micHangoverVal');
+const geminiSilenceSlider = document.getElementById('geminiSilenceSlider');
+const geminiSilenceVal = document.getElementById('geminiSilenceVal');
+
+let audioSettingsPollTimer = null;
+
+function renderAudioSettingsUI(data, updateSliders = true) {
+  if (!data) return;
+  if (updateSliders) {
+    if (micGainSlider && data.hw_mic_gain !== undefined) {
+      micGainSlider.value = String(data.hw_mic_gain);
+      if (micGainVal) micGainVal.textContent = `${Number(data.hw_mic_gain).toFixed(1)}×`;
+    }
+    if (micVadSlider && data.hw_mic_vad_threshold !== undefined) {
+      micVadSlider.value = String(data.hw_mic_vad_threshold);
+      if (micVadVal) micVadVal.textContent = Number(data.hw_mic_vad_threshold).toFixed(3);
+    }
+    if (micHangoverSlider && data.hw_mic_silence_duration_sec !== undefined) {
+      micHangoverSlider.value = String(data.hw_mic_silence_duration_sec);
+      if (micHangoverVal) micHangoverVal.textContent = `${Number(data.hw_mic_silence_duration_sec).toFixed(1)}s`;
+    }
+    if (geminiSilenceSlider && data.gemini_live_silence_ms !== undefined) {
+      geminiSilenceSlider.value = String(data.gemini_live_silence_ms);
+      if (geminiSilenceVal) geminiSilenceVal.textContent = `${data.gemini_live_silence_ms} ms`;
+    }
+  }
+  const meterMax = 0.12;
+  if (micLevelFill && typeof data.live_post_rms === 'number') {
+    const pct = Math.min(100, Math.round((data.live_post_rms / meterMax) * 100));
+    micLevelFill.style.width = `${pct}%`;
+  }
+  if (micThresholdMarker && typeof data.hw_mic_vad_threshold === 'number') {
+    const tPct = Math.min(100, Math.round((data.hw_mic_vad_threshold / meterMax) * 100));
+    micThresholdMarker.style.left = `${tPct}%`;
+  }
+  if (micGateBadge && typeof data.gate_open === 'boolean') {
+    micGateBadge.dataset.open = data.gate_open ? 'true' : 'false';
+    micGateBadge.textContent = data.gate_open ? 'GATE OPEN' : 'GATE CLOSED';
+  }
+}
+
+async function fetchAudioSettings(updateSliders = true) {
+  try {
+    const res = await fetch('/api/audio/settings');
+    if (res.ok) {
+      const data = await res.json();
+      renderAudioSettingsUI(data, updateSliders);
+    }
+  } catch (_) {}
+}
+
+function startAudioSettingsPolling() {
+  fetchAudioSettings(true);
+  stopAudioSettingsPolling();
+  audioSettingsPollTimer = setInterval(() => fetchAudioSettings(false), 250);
+}
+
+function stopAudioSettingsPolling() {
+  if (audioSettingsPollTimer) {
+    clearInterval(audioSettingsPollTimer);
+    audioSettingsPollTimer = null;
+  }
+}
+
+async function saveAudioSettings(patch) {
+  try {
+    const res = await fetch('/api/audio/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      renderAudioSettingsUI(data, true);
+    }
+  } catch (_) {}
+}
+
+if (micGainSlider) {
+  micGainSlider.addEventListener('input', () => {
+    if (micGainVal) micGainVal.textContent = `${Number(micGainSlider.value).toFixed(1)}×`;
+  });
+  micGainSlider.addEventListener('change', () => {
+    saveAudioSettings({ hw_mic_gain: Number(micGainSlider.value) });
+  });
+}
+
+if (micVadSlider) {
+  micVadSlider.addEventListener('input', () => {
+    if (micVadVal) micVadVal.textContent = Number(micVadSlider.value).toFixed(3);
+  });
+  micVadSlider.addEventListener('change', () => {
+    saveAudioSettings({ hw_mic_vad_threshold: Number(micVadSlider.value) });
+  });
+}
+
+if (micHangoverSlider) {
+  micHangoverSlider.addEventListener('input', () => {
+    if (micHangoverVal) micHangoverVal.textContent = `${Number(micHangoverSlider.value).toFixed(1)}s`;
+  });
+  micHangoverSlider.addEventListener('change', () => {
+    saveAudioSettings({ hw_mic_silence_duration_sec: Number(micHangoverSlider.value) });
+  });
+}
+
+if (geminiSilenceSlider) {
+  geminiSilenceSlider.addEventListener('input', () => {
+    if (geminiSilenceVal) geminiSilenceVal.textContent = `${geminiSilenceSlider.value} ms`;
+  });
+  geminiSilenceSlider.addEventListener('change', () => {
+    saveAudioSettings({ gemini_live_silence_ms: Number(geminiSilenceSlider.value) });
+  });
+}
+
+if (calibrateMicBtn) {
+  calibrateMicBtn.addEventListener('click', async () => {
+    calibrateMicBtn.disabled = true;
+    if (calibrateMicStatus) {
+      calibrateMicStatus.textContent = 'Listening for 5s… Stay quiet 2s, then speak a normal sentence!';
+    }
+    try {
+      const res = await fetch('/api/audio/calibrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duration_sec: 5.0 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        renderAudioSettingsUI(data, true);
+        if (calibrateMicStatus) {
+          if (data.sample_count > 0) {
+            calibrateMicStatus.textContent =
+              `Calibrated! Noise=${data.noise_floor_rms}, Speech=${data.speech_rms} → Gain ${data.hw_mic_gain}×, VAD ${data.hw_mic_vad_threshold}`;
+          } else {
+            calibrateMicStatus.textContent =
+              'No live hardware mic samples captured — ensure the Proxmox USB mic is active.';
+          }
+        }
+      }
+    } catch (_) {
+      if (calibrateMicStatus) calibrateMicStatus.textContent = 'Calibration failed.';
+    } finally {
+      calibrateMicBtn.disabled = false;
+    }
+  });
+}
 const muteVoiceIcon = document.getElementById('muteVoiceIcon');
 const muteVoiceLabel = document.getElementById('muteVoiceLabel');
 const castHudBtn = document.getElementById('castHudBtn');

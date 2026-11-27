@@ -138,6 +138,47 @@ class VoiceSelectRequest(BaseModel):
     voice_name: str = Field(..., description="Gemini Live prebuilt voice name (e.g. Giro, Puck, Kore).")
 
 
+class AudioSettingsRequest(BaseModel):
+    """Payload for `/api/audio/settings`."""
+
+    hw_mic_gain: float | None = Field(default=None, ge=0.5, le=16.0)
+    hw_mic_vad_threshold: float | None = Field(default=None, ge=0.0, le=0.25)
+    hw_mic_silence_duration_sec: float | None = Field(default=None, ge=0.3, le=5.0)
+    gemini_live_silence_ms: int | None = Field(default=None, ge=200, le=4000)
+
+
+class AudioCalibrateRequest(BaseModel):
+    """Payload for `/api/audio/calibrate`."""
+
+    duration_sec: float = Field(default=5.0, ge=1.0, le=12.0)
+
+
+def _persist_env_updates(updates: dict[str, str]) -> None:
+    """Persist updated tuning keys to `.env` in CWD when present (best-effort)."""
+    env_path = Path(".env")
+    if not env_path.is_file():
+        return
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        remaining = dict(updates)
+        new_lines: list[str] = []
+        for line in lines:
+            replaced = False
+            for k, v in list(remaining.items()):
+                if line.startswith(f"{k}="):
+                    new_lines.append(f"{k}={v}")
+                    remaining.pop(k, None)
+                    replaced = True
+                    break
+            if not replaced:
+                new_lines.append(line)
+        for k, v in remaining.items():
+            new_lines.append(f"{k}={v}")
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Could not persist audio settings to .env: %s", exc)
+
+
 def _strict_json_loads(raw_bytes: bytes) -> Any:
     """Decode UTF-8 JSON bytes while rejecting non-standard NaN/Infinity constants."""
     def _reject_constant(val: str) -> Any:
@@ -213,6 +254,7 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
     app.state.cast_manager = cast_manager
     app.state.agent_engine = agent_engine
     app.state.live_bridge = live_bridge
+    app.state.hw_mic = hw_mic
     app.state.smart_home = smart_home
     app.state.mcp_server = mcp_server
 
@@ -392,6 +434,69 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
             source="api",
         )
         return {"status": "ok", **selection}
+
+    @app.get("/api/audio/settings")
+    async def get_audio_settings() -> dict[str, Any]:
+        return {
+            "hw_mic_gain": cfg.hw_mic_gain,
+            "hw_mic_vad_threshold": cfg.hw_mic_vad_threshold,
+            "hw_mic_silence_duration_sec": cfg.hw_mic_silence_duration_sec,
+            "gemini_live_silence_ms": cfg.gemini_live_silence_ms,
+            **hw_mic.get_audio_telemetry(),
+        }
+
+    @app.post("/api/audio/settings")
+    async def update_audio_settings(req: AudioSettingsRequest) -> dict[str, Any]:
+        env_updates: dict[str, str] = {}
+        silence_changed = False
+        if req.hw_mic_gain is not None:
+            cfg.hw_mic_gain = round(float(req.hw_mic_gain), 2)
+            env_updates["HW_MIC_GAIN"] = str(cfg.hw_mic_gain)
+        if req.hw_mic_vad_threshold is not None:
+            cfg.hw_mic_vad_threshold = round(float(req.hw_mic_vad_threshold), 4)
+            env_updates["HW_MIC_VAD_THRESHOLD"] = str(cfg.hw_mic_vad_threshold)
+        if req.hw_mic_silence_duration_sec is not None:
+            cfg.hw_mic_silence_duration_sec = round(float(req.hw_mic_silence_duration_sec), 2)
+            env_updates["HW_MIC_SILENCE_DURATION_SEC"] = str(cfg.hw_mic_silence_duration_sec)
+        if req.gemini_live_silence_ms is not None:
+            new_ms = int(req.gemini_live_silence_ms)
+            if new_ms != cfg.gemini_live_silence_ms:
+                silence_changed = True
+            cfg.gemini_live_silence_ms = new_ms
+            env_updates["GEMINI_LIVE_SILENCE_MS"] = str(cfg.gemini_live_silence_ms)
+
+        if env_updates:
+            _persist_env_updates(env_updates)
+
+        if silence_changed and getattr(live_bridge, "_active_websockets", None):
+            for active_ws in list(live_bridge._active_websockets):
+                try:
+                    await active_ws.close(code=1012, reason="Audio settings updated")
+                except Exception:
+                    pass
+
+        return {
+            "status": "ok",
+            "hw_mic_gain": cfg.hw_mic_gain,
+            "hw_mic_vad_threshold": cfg.hw_mic_vad_threshold,
+            "hw_mic_silence_duration_sec": cfg.hw_mic_silence_duration_sec,
+            "gemini_live_silence_ms": cfg.gemini_live_silence_ms,
+            **hw_mic.get_audio_telemetry(),
+        }
+
+    @app.post("/api/audio/calibrate")
+    async def calibrate_audio(
+        req: AudioCalibrateRequest = Body(default_factory=AudioCalibrateRequest),
+    ) -> dict[str, Any]:
+        result = await hw_mic.calibrate_mic(duration_sec=req.duration_sec)
+        if result.get("sample_count", 0) > 0:
+            _persist_env_updates(
+                {
+                    "HW_MIC_GAIN": str(cfg.hw_mic_gain),
+                    "HW_MIC_VAD_THRESHOLD": str(cfg.hw_mic_vad_threshold),
+                }
+            )
+        return {"status": "ok", **result}
 
     @app.get("/api/voice")
     async def get_voice() -> dict[str, Any]:

@@ -197,6 +197,60 @@
         <input id="wakeLockToggle" type="checkbox" switch checked>
       </div>
 
+      <fieldset class="field-group mic-tuning-group">
+        <legend>Microphone &amp; VAD Tuning</legend>
+
+        <div class="mic-meter-row">
+          <div class="mic-meter-header">
+            <span>Live Mic Level</span>
+            <span class="mic-gate-badge" id="micGateBadge" data-open="false">GATE CLOSED</span>
+          </div>
+          <div class="mic-meter-track" aria-hidden="true">
+            <div class="mic-meter-fill" id="micLevelFill"></div>
+            <div class="mic-meter-threshold" id="micThresholdMarker"></div>
+          </div>
+        </div>
+
+        <div class="calibrate-row">
+          <button type="button" class="secondary-btn" id="calibrateMicBtn">Auto-Calibrate Mic (5s)</button>
+          <small class="calibrate-status" id="calibrateMicStatus" role="status" aria-live="polite">
+            Stay quiet ~2s, then speak a normal sentence to auto-tune gain &amp; gate.
+          </small>
+        </div>
+
+        <label class="slider-row" for="micGainSlider">
+          <div class="slider-label-row">
+            <strong>Mic Gain</strong>
+            <span id="micGainVal">2.0×</span>
+          </div>
+          <input type="range" id="micGainSlider" min="0.5" max="8.0" step="0.1" value="2.0">
+        </label>
+
+        <label class="slider-row" for="micVadSlider">
+          <div class="slider-label-row">
+            <strong>VAD Gate Threshold</strong>
+            <span id="micVadVal">0.008</span>
+          </div>
+          <input type="range" id="micVadSlider" min="0.002" max="0.060" step="0.001" value="0.008">
+        </label>
+
+        <label class="slider-row" for="micHangoverSlider">
+          <div class="slider-label-row">
+            <strong>VAD Hangover (sec)</strong>
+            <span id="micHangoverVal">1.4s</span>
+          </div>
+          <input type="range" id="micHangoverSlider" min="0.4" max="3.0" step="0.1" value="1.4">
+        </label>
+
+        <label class="slider-row" for="geminiSilenceSlider">
+          <div class="slider-label-row">
+            <strong>Gemini Turn Pause (ms)</strong>
+            <span id="geminiSilenceVal">1000 ms</span>
+          </div>
+          <input type="range" id="geminiSilenceSlider" min="300" max="2000" step="50" value="1000">
+        </label>
+      </fieldset>
+
       <div class="field-group">
         <label for="customRoomInput"><strong>Add or Target Custom Google Home Speaker / Group</strong></label>
         <div class="inline-input-row">

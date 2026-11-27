@@ -5930,6 +5930,55 @@ async def test_streaming_resampler_and_audio_stream_end_forwarding(
     fake_session.send_realtime_input.assert_awaited_once_with(audio_stream_end=True)
 
 
+@pytest.mark.asyncio
+async def test_audio_settings_and_auto_calibration_endpoints(
+    test_settings: BridgeSettings,
+) -> None:
+    import httpx
+    from agy_home_bridge.hardware_mic import HardwareMicDaemon
+
+    # Pure math calibration check: low room noise (0.0005) + speech (0.030)
+    samples = [0.0005] * 40 + [0.030] * 40
+    cal = HardwareMicDaemon.compute_calibrated_params(samples)
+    assert 1.5 <= cal["hw_mic_gain"] <= 3.0
+    assert 0.004 <= cal["hw_mic_vad_threshold"] <= 0.020
+    assert cal["sample_count"] == 80
+
+    app = create_app(test_settings)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r_get = await client.get("/api/audio/settings")
+        assert r_get.status_code == 200
+        body = r_get.json()
+        assert body["hw_mic_gain"] == 2.0
+        assert body["hw_mic_vad_threshold"] == 0.008
+        assert body["gemini_live_silence_ms"] == 1000
+
+        r_post = await client.post(
+            "/api/audio/settings",
+            json={
+                "hw_mic_gain": 2.5,
+                "hw_mic_vad_threshold": 0.011,
+                "hw_mic_silence_duration_sec": 1.6,
+                "gemini_live_silence_ms": 1200,
+            },
+        )
+        assert r_post.status_code == 200
+        updated = r_post.json()
+        assert updated["hw_mic_gain"] == 2.5
+        assert updated["hw_mic_vad_threshold"] == 0.011
+        assert updated["hw_mic_silence_duration_sec"] == 1.6
+        assert updated["gemini_live_silence_ms"] == 1200
+
+        r_pwa = await client.get("/")
+        assert r_pwa.status_code == 200
+        assert 'id="calibrateMicBtn"' in r_pwa.text
+        assert 'id="micGainSlider"' in r_pwa.text
+        assert 'id="micVadSlider"' in r_pwa.text
+
+
+
 
 
 
