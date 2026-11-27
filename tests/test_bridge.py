@@ -5952,7 +5952,7 @@ async def test_audio_settings_and_auto_calibration_endpoints(
         assert r_get.status_code == 200
         body = r_get.json()
         assert body["hw_mic_gain"] == 2.0
-        assert body["hw_mic_vad_threshold"] == 0.008
+        assert body["hw_mic_vad_threshold"] == 0.025
         assert body["gemini_live_silence_ms"] == 1000
 
         r_post = await client.post(

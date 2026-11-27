@@ -805,6 +805,10 @@ class FullDuplexLiveBridge:
                     ),
                 )
             elif msg_type == "audio_stream_end":
+                if user_pcm_ring is not None and not self._voice_status == "speaking":
+                    # Avoid splicing unrelated earlier noise bursts into a future prompt WAV
+                    if len(user_pcm_ring) > 16000 * 2 * 6:
+                        del user_pcm_ring[:-16000 * 2 * 6]
                 try:
                     await session.send_realtime_input(audio_stream_end=True)
                 except Exception as exc:
