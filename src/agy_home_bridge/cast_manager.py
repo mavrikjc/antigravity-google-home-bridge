@@ -779,7 +779,7 @@ class GoogleHomeCastManager:
             self._cast_url_sync, resolved_name, media_url, "audio/mp3", volume
         )
         if cast_result.get("status") == "casting":
-            est_sec = max(2.0, len(text.split()) * 0.42) + 2.2
+            est_sec = max(2.0, len(text.split()) * 0.42) + 3.0
             self.extend_cast_mute(est_sec, append=False)
         return {
             "status": cast_result["status"],
@@ -814,7 +814,7 @@ class GoogleHomeCastManager:
         )
         if cast_result.get("status") == "casting":
             clip_sec = len(pcm_bytes) / float(max(1, sample_rate) * 2)
-            tail = 0.8 if enqueue else 2.2
+            tail = 1.0 if enqueue else 3.0
             self.extend_cast_mute(clip_sec + tail, append=enqueue)
         return {
             "status": cast_result["status"],

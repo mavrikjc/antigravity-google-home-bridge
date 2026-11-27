@@ -760,7 +760,7 @@ class FullDuplexLiveBridge:
                 return
             pcm_copy = bytes(turn_pcm_buffer)
             turn_pcm_buffer.clear()
-            enqueue = phrase_idx > 0
+            enqueue = phrase_idx > 0 or self.cast_manager.is_casting_audio
             phrase_idx += 1
             # Ensure sequential ordering if a previous phrase task is still uploading
             cast_tasks[:] = [t for t in cast_tasks if not t.done()]
