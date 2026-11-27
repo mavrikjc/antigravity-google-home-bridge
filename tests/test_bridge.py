@@ -5873,11 +5873,18 @@ async def test_user_prompt_audio_saved_and_linked_to_transcript(
         audio_url = audio_msgs[0]["audio_url"]
         assert audio_url.startswith("/api/tts/prompt_") and audio_url.endswith(".wav")
 
-        # Verify the saved WAV file exists and is non-empty
+        # Verify the saved WAV file and companion JSON metadata exist
         wav_name = audio_url.rsplit("/", 1)[-1]
         wav_path = test_settings.tts_cache_dir / wav_name
         assert wav_path.is_file()
         assert wav_path.stat().st_size > 44
+        meta_path = wav_path.with_suffix(".json")
+        assert meta_path.is_file()
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert meta["wav_filename"] == wav_name
+        assert meta["transcript"] == "Can you hear me?"
+        assert meta["audio_settings"]["hw_mic_gain"] == test_settings.hw_mic_gain
+        assert meta["audio_settings"]["hw_mic_vad_threshold"] == test_settings.hw_mic_vad_threshold
 
         # Verify EventHub also received transcript_audio for other PWA tabs
         hub_events: list[dict[str, Any]] = []

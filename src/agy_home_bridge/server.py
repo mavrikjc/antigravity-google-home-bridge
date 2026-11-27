@@ -558,7 +558,12 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
         file_path = cfg.tts_cache_dir / safe_name
         if not file_path.is_file():
             raise HTTPException(status_code=404, detail="Audio file not found")
-        media_type = "audio/wav" if safe_name.endswith(".wav") else "audio/mpeg"
+        if safe_name.endswith(".wav"):
+            media_type = "audio/wav"
+        elif safe_name.endswith(".json"):
+            media_type = "application/json"
+        else:
+            media_type = "audio/mpeg"
         return FileResponse(str(file_path), media_type=media_type)
 
     @app.post("/api/agent/ask")

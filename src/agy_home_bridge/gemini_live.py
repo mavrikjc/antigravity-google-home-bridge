@@ -954,6 +954,7 @@ class FullDuplexLiveBridge:
         last_agent_tr = ""
         cast_tasks: list[asyncio.Task[Any]] = []
         user_turn_has_transcript = False
+        user_turn_text_parts: list[str] = []
 
         async def _flush_user_prompt_audio() -> None:
             nonlocal user_turn_has_transcript
@@ -962,6 +963,8 @@ class FullDuplexLiveBridge:
             pcm_copy = bytes(user_pcm_ring)
             user_pcm_ring.clear()
             user_turn_has_transcript = False
+            turn_transcript = "".join(user_turn_text_parts).strip()
+            user_turn_text_parts.clear()
             trimmed = self._trim_pcm_silence(pcm_copy, sample_rate=16000)
             if not trimmed:
                 return
@@ -973,6 +976,55 @@ class FullDuplexLiveBridge:
                     1,
                     "prompt_",
                 )
+                # Write companion JSON metadata with audio settings & waveform stats
+                try:
+                    import array as _array
+                    import math as _math
+                    import sys as _sys
+                    from datetime import datetime as _dt, timezone as _tz
+
+                    even_len = len(trimmed) - (len(trimmed) % 2)
+                    samples = _array.array("h")
+                    samples.frombytes(trimmed[:even_len])
+                    if _sys.byteorder != "little":
+                        samples.byteswap()
+                    peak = max(abs(min(samples)), abs(max(samples))) if samples else 0
+                    rms_val = (
+                        _math.sqrt(sum(x * x for x in samples) / len(samples))
+                        if samples
+                        else 0.0
+                    )
+                    dbfs = (
+                        round(20.0 * _math.log10(rms_val / 32768.0), 1)
+                        if rms_val > 0
+                        else None
+                    )
+                    meta = {
+                        "wav_filename": wav_path.name,
+                        "created_at": _dt.now(_tz.utc).isoformat(),
+                        "transcript": turn_transcript,
+                        "sample_rate": 16000,
+                        "duration_sec": round(len(samples) / 16000.0, 2),
+                        "peak": peak,
+                        "rms": round(rms_val, 1),
+                        "dbfs": dbfs,
+                        "audio_settings": {
+                            "hw_mic_gain": self.config.hw_mic_gain,
+                            "hw_mic_vad_threshold": self.config.hw_mic_vad_threshold,
+                            "hw_mic_silence_duration_sec": self.config.hw_mic_silence_duration_sec,
+                            "gemini_live_silence_ms": self.config.gemini_live_silence_ms,
+                            "gemini_live_voice": self.config.gemini_live_voice,
+                        },
+                    }
+                    meta_path = wav_path.with_suffix(".json")
+                    await asyncio.to_thread(
+                        meta_path.write_text,
+                        json.dumps(meta, indent=2),
+                        "utf-8",
+                    )
+                except Exception as meta_exc:
+                    logger.debug("Failed to write prompt metadata JSON: %s", meta_exc)
+
                 audio_url = f"/api/tts/{wav_path.name}"
                 await self._send_json(
                     websocket,
@@ -1068,6 +1120,7 @@ class FullDuplexLiveBridge:
                         if isinstance(tr_text, str) and tr_text:
                             if role == "user":
                                 user_turn_has_transcript = True
+                                user_turn_text_parts.append(tr_text)
                             elif role == "agent":
                                 await _flush_user_prompt_audio()
                                 last_agent_tr += tr_text
