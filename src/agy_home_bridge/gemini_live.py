@@ -537,6 +537,7 @@ class FullDuplexLiveBridge:
 
             live_instructions = (
                 f"{self.agent_engine.system_instructions}\n"
+                "- Default to English for all responses and transcriptions unless the user explicitly asks you to switch languages.\n"
                 "- When delegating workspace tasks via `delegate_to_antigravity_agent`, it runs asynchronously "
                 "in the background: briefly acknowledge the started task to the user right away.\n"
                 "- Use `switch_project` when the user asks to switch projects or `project_agent` slots.\n"
@@ -560,9 +561,10 @@ class FullDuplexLiveBridge:
                         )
                     )
                 ),
-                # Respond quickly once the user stops talking (default waits longer).
+                # Respond quickly once the user stops talking, while requiring clear speech to start.
                 realtime_input_config=genai_types.RealtimeInputConfig(
                     automatic_activity_detection=genai_types.AutomaticActivityDetection(
+                        start_of_speech_sensitivity=genai_types.StartSensitivity.START_SENSITIVITY_LOW,
                         end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
                         silence_duration_ms=self.config.gemini_live_silence_ms,
                         prefix_padding_ms=100,
@@ -802,6 +804,11 @@ class FullDuplexLiveBridge:
                         data=forward_pcm, mime_type="audio/pcm;rate=16000"
                     ),
                 )
+            elif msg_type == "audio_stream_end":
+                try:
+                    await session.send_realtime_input(audio_stream_end=True)
+                except Exception as exc:
+                    logger.debug("audio_stream_end signal ignored: %s", exc)
             elif msg_type == "text":
                 raw_text = msg.get("text", "")
                 if not isinstance(raw_text, str):

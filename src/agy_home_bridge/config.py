@@ -101,7 +101,8 @@ class BridgeSettings(BaseSettings):
     hw_mic_device_index: int | None = Field(default=None, alias="HW_MIC_DEVICE_INDEX")
     hw_mic_device_name: str = Field(default="", alias="HW_MIC_DEVICE_NAME")
     hw_mic_sample_rate: int = Field(default=16000, alias="HW_MIC_SAMPLE_RATE")
-    hw_mic_vad_threshold: float = Field(default=0.045, alias="HW_MIC_VAD_THRESHOLD")
+    hw_mic_gain: float = Field(default=4.0, ge=0.5, le=16.0, alias="HW_MIC_GAIN")
+    hw_mic_vad_threshold: float = Field(default=0.018, alias="HW_MIC_VAD_THRESHOLD")
     hw_mic_silence_duration_sec: float = Field(
         default=1.1, alias="HW_MIC_SILENCE_DURATION_SEC"
     )

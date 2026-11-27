@@ -5891,6 +5891,46 @@ async def test_user_prompt_audio_saved_and_linked_to_transcript(
         app.state.event_hub.unsubscribe(q)
 
 
+@pytest.mark.asyncio
+async def test_streaming_resampler_and_audio_stream_end_forwarding(
+    test_settings: BridgeSettings,
+) -> None:
+    import math
+    import struct
+    from agy_home_bridge.hardware_mic import StreamingResampler, compute_pcm16_rms
+
+    # 40ms of 1kHz sine at 48kHz (1920 samples) at low amplitude (~2000)
+    in_samples = [
+        int(2000 * math.sin(2.0 * math.pi * 1000.0 * i / 48000.0))
+        for i in range(1920)
+    ]
+    pcm_48k = struct.pack(f"<{len(in_samples)}h", *in_samples)
+
+    resampler = StreamingResampler(in_rate=48000, out_rate=16000, gain=4.0)
+    out_16k = resampler.process(pcm_48k)
+    assert len(out_16k) == 640 * 2  # 40ms @ 16kHz
+    assert compute_pcm16_rms(out_16k) > compute_pcm16_rms(pcm_48k) * 2.5
+
+    # Verify audio_stream_end forwards audio_stream_end=True to Gemini Live session
+    app = create_app(test_settings)
+    bridge = app.state.live_bridge
+    fake_ws = MagicMock()
+    frames = iter(
+        [
+            {"type": "websocket.receive", "text": json.dumps({"type": "audio_stream_end"})},
+            {"type": "websocket.disconnect"},
+        ]
+    )
+    fake_ws.receive = AsyncMock(side_effect=lambda: next(frames))
+    fake_ws.send_text = AsyncMock()
+    fake_session = MagicMock()
+    fake_session.send_realtime_input = AsyncMock()
+
+    await bridge._forward_client_to_gemini(fake_ws, fake_session)
+    fake_session.send_realtime_input.assert_awaited_once_with(audio_stream_end=True)
+
+
+
 
 
 

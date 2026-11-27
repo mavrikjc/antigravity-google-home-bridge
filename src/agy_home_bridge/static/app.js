@@ -291,14 +291,41 @@ function appendTranscript(role, text, partial) {
 
 function attachPromptAudio(audioUrl) {
   if (!audioUrl || !lastUserTranscriptEl) return;
-  if (lastUserTranscriptEl.querySelector('audio.prompt-audio')) return;
+  if (lastUserTranscriptEl.querySelector('.prompt-audio-row')) return;
+  const row = document.createElement('div');
+  row.className = 'prompt-audio-row';
+
   const audio = document.createElement('audio');
   audio.className = 'prompt-audio';
   audio.controls = true;
   audio.preload = 'none';
   audio.src = audioUrl;
   audio.setAttribute('aria-label', 'Play recorded voice prompt');
-  lastUserTranscriptEl.appendChild(audio);
+
+  const dlBtn = document.createElement('button');
+  dlBtn.type = 'button';
+  dlBtn.className = 'prompt-audio-dl';
+  dlBtn.textContent = '⬇ WAV';
+  dlBtn.title = 'Download recorded prompt WAV';
+  dlBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch(audioUrl);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = audioUrl.split('/').pop() || 'voice_prompt.wav';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+    } catch (_) {}
+  });
+
+  row.appendChild(audio);
+  row.appendChild(dlBtn);
+  lastUserTranscriptEl.appendChild(row);
   transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
 }
 

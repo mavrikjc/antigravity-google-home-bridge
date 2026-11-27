@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import json
 import logging
 import math
 import struct
+import time
 from typing import Any
 
 import websockets
@@ -32,6 +34,84 @@ def compute_pcm16_rms(pcm_bytes: bytes) -> float:
     return math.sqrt(sum_sq / sample_count)
 
 
+class StreamingResampler:
+    """Stateful windowed-sinc anti-aliased resampler + soft-limited gain for 16-bit mono PCM."""
+
+    def __init__(self, in_rate: int, out_rate: int = 16000, gain: float = 1.0) -> None:
+        self.in_rate = in_rate
+        self.out_rate = out_rate
+        self.gain = max(0.5, float(gain))
+        self._np: Any = None
+        self._taps: Any = None
+        self._tail: Any = None
+        try:
+            import numpy as np  # type: ignore
+
+            self._np = np
+            if in_rate > out_rate:
+                # 31-tap Blackman-windowed sinc low-pass filter at 0.45 * out_rate (7.2 kHz for 16 kHz)
+                num_taps = 31
+                fc = (0.45 * out_rate) / float(in_rate)
+                n = np.arange(num_taps) - (num_taps - 1) / 2.0
+                h = np.sinc(2.0 * fc * n) * np.blackman(num_taps)
+                h = h / np.sum(h)
+                self._taps = h.astype(np.float32)
+                self._tail = np.zeros(num_taps - 1, dtype=np.float32)
+        except ImportError:
+            self._np = None
+
+    def process(self, pcm_bytes: bytes) -> bytes:
+        if len(pcm_bytes) < 2:
+            return b""
+        if self._np is None:
+            down = downsample_pcm16_to_16k(pcm_bytes, self.in_rate)
+            if self.gain == 1.0 or not down:
+                return down
+            count = len(down) // 2
+            samples = struct.unpack(f"<{count}h", down[: count * 2])
+            scaled = [
+                max(-32768, min(32767, round(s * self.gain))) for s in samples
+            ]
+            return struct.pack(f"<{count}h", *scaled)
+
+        np = self._np
+        even_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
+        x = np.frombuffer(pcm_bytes[:even_len], dtype="<i2").astype(np.float32) / 32768.0
+
+        if self.in_rate == self.out_rate:
+            y = x
+        elif self._taps is not None:
+            # Overlap-save convolution so 40ms chunk boundaries have zero clicks
+            padded = np.concatenate((self._tail, x))
+            self._tail = padded[-(len(self._taps) - 1) :].copy()
+            filtered = np.convolve(padded, self._taps, mode="valid")
+            if self.in_rate % self.out_rate == 0:
+                step = self.in_rate // self.out_rate
+                y = filtered[::step]
+            else:
+                out_len = int(len(filtered) * self.out_rate / self.in_rate)
+                if out_len <= 0:
+                    return b""
+                src_idx = np.linspace(0.0, len(filtered) - 1, out_len, dtype=np.float32)
+                y = np.interp(src_idx, np.arange(len(filtered), dtype=np.float32), filtered).astype(np.float32)
+        else:
+            out_len = int(len(x) * self.out_rate / self.in_rate)
+            if out_len <= 0:
+                return b""
+            src_idx = np.linspace(0.0, len(x) - 1, out_len, dtype=np.float32)
+            y = np.interp(src_idx, np.arange(len(x), dtype=np.float32), x).astype(np.float32)
+
+        if self.gain != 1.0:
+            y = y * self.gain
+            # Smooth soft-limiter above 0.85 full-scale to prevent harsh digital clipping
+            over = np.abs(y) > 0.85
+            if np.any(over):
+                y = np.where(over, np.sign(y) * (0.85 + 0.15 * np.tanh((np.abs(y) - 0.85) / 0.15)), y)
+
+        out_i16 = np.clip(np.rint(y * 32767.0), -32768, 32767).astype("<i2")
+        return out_i16.tobytes()
+
+
 def downsample_pcm16_to_16k(pcm_bytes: bytes, in_rate: int) -> bytes:
     """Downsample 16-bit signed mono PCM from `in_rate` (e.g. 48000 Hz) to 16000 Hz."""
     if in_rate == 16000 or len(pcm_bytes) < 2:
@@ -48,7 +128,7 @@ def downsample_pcm16_to_16k(pcm_bytes: bytes, in_rate: int) -> bytes:
         end = min(sample_count, int((o + 1) * ratio))
         if end <= start:
             end = start + 1
-        avg = sum(samples[start:end]) // (end - start)
+        avg = round(sum(samples[start:end]) / (end - start))
         out_samples.append(max(-32768, min(32767, avg)))
     return struct.pack(f"<{len(out_samples)}h", *out_samples)
 
@@ -117,10 +197,25 @@ class HardwareMicDaemon:
             )
 
         self._running = True
+        resampler = StreamingResampler(
+            in_rate=capture_rate,
+            out_rate=16000,
+            gain=self.config.hw_mic_gain,
+        )
+        vad_threshold = max(0.0, float(self.config.hw_mic_vad_threshold))
+        hangover_sec = max(0.4, float(self.config.hw_mic_silence_duration_sec))
+        pre_roll: deque[bytes] = deque(maxlen=8)  # 8 * 40ms = 320ms pre-roll
+        gate_open = False
+        last_speech_at = 0.0
+
         logger.info(
-            "Starting Proxmox Hardware Wireless Mic Daemon (device=%s, capture=%dHz -> 16000Hz) -> %s",
+            "Starting Proxmox Hardware Wireless Mic Daemon "
+            "(device=%s, capture=%dHz -> 16000Hz, gain=%.1fx, vad=%.4f, hangover=%.2fs) -> %s",
             device,
             capture_rate,
+            self.config.hw_mic_gain,
+            vad_threshold,
+            hangover_sec,
             target_ws,
         )
 
@@ -150,24 +245,51 @@ class HardwareMicDaemon:
                         await ws.send(
                             json.dumps({"type": "set_routing", "mode": "cast"})
                         )
-                        while self._running:
-                            raw_chunk = await audio_queue.get()
-                            pcm_chunk = downsample_pcm16_to_16k(raw_chunk, capture_rate)
-                            if not pcm_chunk:
-                                continue
-                            # Stream continuously and let Gemini Live's server-side VAD
-                            # (`server_content.interrupted`) handle barge-in without
-                            # hair-trigger local RMS stops cutting off Google Home casts.
+                        gate_open = False
+                        pre_roll.clear()
+
+                        async def _send_chunk(chunk: bytes) -> None:
                             await ws.send(
                                 json.dumps(
                                     {
                                         "type": "audio_chunk",
-                                        "pcm_b64": base64.b64encode(pcm_chunk).decode(
+                                        "pcm_b64": base64.b64encode(chunk).decode(
                                             "ascii"
                                         ),
                                     }
                                 )
                             )
+
+                        while self._running:
+                            raw_chunk = await audio_queue.get()
+                            pcm_chunk = resampler.process(raw_chunk)
+                            if not pcm_chunk:
+                                continue
+
+                            rms = compute_pcm16_rms(pcm_chunk)
+                            now = time.monotonic()
+
+                            if vad_threshold <= 0.0:
+                                await _send_chunk(pcm_chunk)
+                                continue
+
+                            if rms >= vad_threshold:
+                                last_speech_at = now
+                                if not gate_open:
+                                    gate_open = True
+                                    for buffered in pre_roll:
+                                        await _send_chunk(buffered)
+                                    pre_roll.clear()
+                                await _send_chunk(pcm_chunk)
+                            elif gate_open:
+                                await _send_chunk(pcm_chunk)
+                                if (now - last_speech_at) >= hangover_sec:
+                                    gate_open = False
+                                    await ws.send(
+                                        json.dumps({"type": "audio_stream_end"})
+                                    )
+                            else:
+                                pre_roll.append(pcm_chunk)
                 except Exception as exc:
                     logger.warning(
                         "Hardware mic daemon reconnecting in 3s (%s)", exc
