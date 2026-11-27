@@ -20,7 +20,11 @@ from agy_home_bridge.cast_manager import GoogleHomeCastManager
 from agy_home_bridge.cli import main as cli_main
 from agy_home_bridge.config import BridgeSettings, detect_lan_ip
 from agy_home_bridge.gemini_live import FullDuplexLiveBridge
-from agy_home_bridge.hardware_mic import HardwareMicDaemon, compute_pcm16_rms
+from agy_home_bridge.hardware_mic import (
+    HardwareMicDaemon,
+    compute_pcm16_rms,
+    downsample_pcm16_to_16k,
+)
 from agy_home_bridge.mcp_server import BridgeMCPServer, run_stdio_mcp_loop
 from agy_home_bridge.server import create_app
 
@@ -686,6 +690,14 @@ def test_pcm16_rms_and_hardware_mic_listing(test_settings: BridgeSettings) -> No
         devices = daemon.list_audio_input_devices()
         assert len(devices) == 1
         assert devices[0]["name"] == "Hollyland Lark M2 USB Receiver"
+        daemon.config.hw_mic_device_name = "Lark M2"
+        assert daemon._resolve_input_device(fake_sd) == 0
+
+    # Verify 48kHz -> 16kHz 3:1 downsampling
+    import struct
+    pcm_48k = struct.pack("<6h", 1000, 1000, 1000, -2000, -2000, -2000)
+    pcm_16k = downsample_pcm16_to_16k(pcm_48k, 48000)
+    assert struct.unpack("<2h", pcm_16k) == (1000, -2000)
     daemon.stop()
 
 

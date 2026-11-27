@@ -32,6 +32,27 @@ def compute_pcm16_rms(pcm_bytes: bytes) -> float:
     return math.sqrt(sum_sq / sample_count)
 
 
+def downsample_pcm16_to_16k(pcm_bytes: bytes, in_rate: int) -> bytes:
+    """Downsample 16-bit signed mono PCM from `in_rate` (e.g. 48000 Hz) to 16000 Hz."""
+    if in_rate == 16000 or len(pcm_bytes) < 2:
+        return pcm_bytes
+    sample_count = len(pcm_bytes) // 2
+    samples = struct.unpack(f"<{sample_count}h", pcm_bytes[: sample_count * 2])
+    ratio = in_rate / 16000.0
+    out_len = int(sample_count / ratio)
+    if out_len <= 0:
+        return b""
+    out_samples = []
+    for o in range(out_len):
+        start = int(o * ratio)
+        end = min(sample_count, int((o + 1) * ratio))
+        if end <= start:
+            end = start + 1
+        avg = sum(samples[start:end]) // (end - start)
+        out_samples.append(max(-32768, min(32767, avg)))
+    return struct.pack(f"<{len(out_samples)}h", *out_samples)
+
+
 class HardwareMicDaemon:
     """Captures 16kHz mono PCM from a USB wireless microphone connected to Proxmox and streams to `/ws/live`."""
 
@@ -77,8 +98,9 @@ class HardwareMicDaemon:
             ws_url
             or f"ws://127.0.0.1:{self.config.bridge_port}/ws/live"
         )
-        sample_rate = self.config.hw_mic_sample_rate
-        block_size = int(sample_rate * 0.1)  # 100ms chunks
+        device = self._resolve_input_device(sd)
+        capture_rate = self._choose_capture_rate(sd, device, self.config.hw_mic_sample_rate)
+        block_size = int(capture_rate * 0.04)  # 40ms chunks for low-latency streaming
         loop = asyncio.get_running_loop()
         audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
 
@@ -96,16 +118,16 @@ class HardwareMicDaemon:
 
         self._running = True
         logger.info(
-            "Starting Proxmox Hardware Wireless Mic Daemon (device=%s, rate=%dHz) -> %s",
-            self.config.hw_mic_device_index,
-            sample_rate,
+            "Starting Proxmox Hardware Wireless Mic Daemon (device=%s, capture=%dHz -> 16000Hz) -> %s",
+            device,
+            capture_rate,
             target_ws,
         )
 
         with sd.RawInputStream(
-            samplerate=sample_rate,
+            samplerate=capture_rate,
             blocksize=block_size,
-            device=self.config.hw_mic_device_index,
+            device=device,
             channels=1,
             dtype="int16",
             callback=_audio_callback,
@@ -119,7 +141,10 @@ class HardwareMicDaemon:
                         )
                         is_speaking = False
                         while self._running:
-                            pcm_chunk = await audio_queue.get()
+                            raw_chunk = await audio_queue.get()
+                            pcm_chunk = downsample_pcm16_to_16k(raw_chunk, capture_rate)
+                            if not pcm_chunk:
+                                continue
                             rms = compute_pcm16_rms(pcm_chunk)
                             if rms >= self.config.hw_mic_vad_threshold and not is_speaking:
                                 is_speaking = True
@@ -142,6 +167,33 @@ class HardwareMicDaemon:
                         "Hardware mic daemon reconnecting in 3s (%s)", exc
                     )
                     await asyncio.sleep(3.0)
+
+    def _resolve_input_device(self, sd: Any) -> int | None:
+        """Resolve input device by HW_MIC_DEVICE_NAME substring first, then HW_MIC_DEVICE_INDEX."""
+        if self.config.hw_mic_device_name.strip():
+            target = self.config.hw_mic_device_name.strip().lower()
+            for dev in self.list_audio_input_devices():
+                if target in dev["name"].lower():
+                    return int(dev["index"])
+        return self.config.hw_mic_device_index
+
+    @staticmethod
+    def _choose_capture_rate(sd: Any, device: int | None, preferred_rate: int) -> int:
+        """Pick preferred_rate (16000) if supported, else fall back to 48000/44100/device default."""
+        candidates = [preferred_rate, 16000, 48000, 44100]
+        seen: set[int] = set()
+        for rate in candidates:
+            if rate in seen:
+                continue
+            seen.add(rate)
+            try:
+                sd.check_input_settings(
+                    device=device, samplerate=rate, channels=1, dtype="int16"
+                )
+                return rate
+            except Exception:
+                continue
+        return preferred_rate
 
     def stop(self) -> None:
         self._running = False
