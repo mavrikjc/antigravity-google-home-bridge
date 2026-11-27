@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def detect_lan_ip() -> str:
@@ -28,6 +29,7 @@ class BridgeSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Gemini & Antigravity SDK
@@ -90,12 +92,66 @@ class BridgeSettings(BaseSettings):
         default=1.1, alias="HW_MIC_SILENCE_DURATION_SEC"
     )
 
+    # JARVIS Mode: Room presence, TV casting, Project Manager & EventHub
+    room_device_map: Annotated[dict[str, Any], NoDecode] = Field(
+        default_factory=dict,
+        alias="ROOM_DEVICE_MAP",
+    )
+    default_presence_room: str = Field(
+        default="",
+        alias="DEFAULT_PRESENCE_ROOM",
+    )
+    cast_discovery_timeout: float = Field(
+        default=6.0,
+        ge=0.5,
+        alias="CAST_DISCOVERY_TIMEOUT",
+    )
+    cast_tv_timeout: float = Field(
+        default=5.0,
+        ge=0.5,
+        alias="CAST_TV_TIMEOUT",
+    )
+    hud_cast_force: bool = Field(
+        default=True,
+        alias="HUD_CAST_FORCE",
+    )
+    projects_state_file: str = Field(
+        default="",
+        alias="PROJECTS_STATE_FILE",
+    )
+    default_agent_id: str = Field(
+        default="101",
+        alias="DEFAULT_AGENT_ID",
+    )
+    event_history_size: int = Field(
+        default=200,
+        ge=1,
+        alias="EVENT_HISTORY_SIZE",
+    )
+
     @field_validator("hw_mic_device_index", mode="before")
     @classmethod
     def _empty_str_to_none(cls, val: Any) -> Any:
         if val == "" or (isinstance(val, str) and not val.strip()):
             return None
         return val
+
+    @field_validator("room_device_map", mode="before")
+    @classmethod
+    def _parse_room_device_map(cls, val: Any) -> dict[str, Any]:
+        if val is None:
+            return {}
+        if isinstance(val, str):
+            raw = val.strip()
+            if not raw:
+                return {}
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("ROOM_DEVICE_MAP JSON must decode to an object")
+            return parsed
+        if isinstance(val, dict):
+            return dict(val)
+        raise ValueError("room_device_map must be a dict or JSON object string")
 
     @property
     def resolved_lan_ip(self) -> str:
@@ -136,6 +192,18 @@ class BridgeSettings(BaseSettings):
             for host in self.known_cast_hosts.split(",")
             if host.strip()
         ]
+
+    @property
+    def resolved_projects_state_file(self) -> Path:
+        """Return explicit PROJECTS_STATE_FILE or default `<agy_save_dir>/projects_state.json`."""
+        if self.projects_state_file.strip():
+            return Path(self.projects_state_file.strip())
+        return Path(self.agy_save_dir) / "projects_state.json"
+
+    @property
+    def hud_lan_url(self) -> str:
+        """Return plain HTTP LAN URL for `/hud` (required for Chromecast DashCast / TV browsers)."""
+        return f"{self.base_lan_url}/hud"
 
 
 settings = BridgeSettings()

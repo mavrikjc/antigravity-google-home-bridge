@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#070b14">
+  <title>Antigravity JARVIS HUD</title>
+  <link rel="stylesheet" href="/static/hud.css">
+</head>
+<body>
+  <div class="hud-shell">
+    <header class="hud-header">
+      <div class="hud-brand-row">
+        <div class="hud-title-group">
+          <span class="hud-conn-dot" id="hudConnDot" aria-hidden="true"></span>
+          <div>
+            <h1 class="hud-title">Antigravity JARVIS HUD</h1>
+            <p class="hud-subtitle" id="hudConnStatus">Connecting to live HUD stream…</p>
+          </div>
+        </div>
+
+        <div class="hud-status-group">
+          <!-- Region 2: Voice Status (paired icon + text, never color alone) -->
+          <div class="hud-voice-pill" id="hudVoiceStatus" data-voice-status="idle" role="status" aria-live="polite">
+            <span class="hud-voice-icon" id="hudVoiceIcon" aria-hidden="true">●</span>
+            <span class="hud-voice-text" id="hudVoiceLabel">Voice: IDLE</span>
+          </div>
+          <time class="hud-clock" id="hudClock">--:--</time>
+        </div>
+      </div>
+
+      <div class="hud-context-bar">
+        <!-- Region 1: Active Room, Active Google Home Speaker, Active Room TV -->
+        <dl class="hud-location-strip" aria-label="Active Room and Cast Devices">
+          <div class="hud-metric-card">
+            <dt>Active Room</dt>
+            <dd id="hudActiveRoom">whole home</dd>
+          </div>
+          <div class="hud-metric-card">
+            <dt>Google Home Speaker</dt>
+            <dd id="hudActiveSpeaker">Whole Home</dd>
+          </div>
+          <div class="hud-metric-card">
+            <dt>Room TV</dt>
+            <dd id="hudActiveTv">No TV mapped</dd>
+          </div>
+        </dl>
+
+        <!-- Region 3: Currently Selected Active Project & project_agent -->
+        <div class="hud-active-target" id="hudActiveTarget" aria-label="Active Voice Routing Target">
+          <span class="hud-target-kicker">Active Voice Target</span>
+          <strong class="hud-target-name" id="hudActiveProjectAgent">Loading project…</strong>
+          <div class="hud-target-meta">
+            <span class="hud-mono-chip" id="hudActiveConversation">thread: none</span>
+            <span class="hud-mono-chip" id="hudActiveProjectMeta">branch: --</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="hud-grid">
+      <!-- Region 4: Node-Based View of Concurrent Projects, Agents/Swarms & Active Threads -->
+      <section class="hud-projects-nodes" id="hudProjectsNodes" aria-labelledby="hudNodesHeading">
+        <div class="hud-panel-header">
+          <h2 id="hudNodesHeading">Workspace Projects &amp; Agent Nodes</h2>
+          <span class="hud-panel-count" id="hudProjectCount">0 projects</span>
+        </div>
+        <div class="hud-node-tree" id="hudNodeTree">
+          <p class="hud-empty">Hydrating workspace nodes…</p>
+        </div>
+      </section>
+
+      <!-- Region 5: Live Thinking / Tool Call / Tool Result / Token Activity Stream -->
+      <section class="hud-activity-panel" aria-labelledby="hudStreamHeading">
+        <div class="hud-panel-header">
+          <h2 id="hudStreamHeading">Live Thinking &amp; Tool Stream</h2>
+          <span class="hud-panel-count" id="hudStreamCount">0 events</span>
+        </div>
+        <ol class="hud-activity-stream" id="hudActivityStream" aria-live="polite">
+          <li class="hud-empty">Waiting for JARVIS agent events…</li>
+        </ol>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/static/hud.js"></script>
+</body>
+</html>

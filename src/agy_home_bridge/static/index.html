@@ -60,14 +60,50 @@
         </p>
       </section>
 
-      <!-- Quick Room Follow Bar -->
-      <section class="room-bar" aria-label="Google Home Room Switcher">
+      <!-- Quick Room Follow Bar & Room TV HUD Cast -->
+      <section class="room-bar" aria-label="Google Home Room Switcher and TV HUD">
         <div class="room-bar-header">
           <span class="section-caption">Follow-Me Google Home Speaker</span>
           <button type="button" class="ghost-btn" id="refreshSpeakersBtn">Scan LAN</button>
         </div>
         <div class="room-pills" id="roomPills" role="group" aria-label="Available Google Home Rooms">
           <!-- Populated with speakers discovered on the LAN -->
+        </div>
+        <div class="room-tv-row" id="roomTvRow">
+          <div class="room-tv-meta">
+            <span class="section-caption">Room TV &amp; JARVIS HUD</span>
+            <span class="tv-status-pill" id="activeTvLabel">No TV mapped</span>
+          </div>
+          <div class="room-tv-actions">
+            <a class="secondary-btn hud-open-link" id="openHudLink" href="/hud" target="_blank" rel="noopener">Open /hud</a>
+            <button type="button" class="primary-btn" id="castHudBtn">Cast HUD to Room TV</button>
+          </div>
+        </div>
+        <p class="cast-hud-feedback" id="castHudFeedback" role="status" aria-live="polite" hidden></p>
+      </section>
+
+      <!-- JARVIS Concurrent Projects, Agent Nodes & Live Thinking/Tool Stream -->
+      <section class="jarvis-nodes-panel" id="jarvisNodesPanel" aria-labelledby="jarvisNodesHeading">
+        <div class="nodes-header">
+          <div class="nodes-title-wrap">
+            <h2 class="section-caption" id="jarvisNodesHeading">JARVIS Workspace Nodes</h2>
+            <p class="active-target-summary" id="activeTargetSummary">Voice Target: Loading…</p>
+          </div>
+          <button type="button" class="ghost-btn" id="refreshProjectsBtn">Refresh</button>
+        </div>
+
+        <div class="projects-node-grid" id="projectsNodeGrid">
+          <!-- Populated dynamically with clickable Project -> Agent/Swarm Node buttons -->
+        </div>
+
+        <div class="node-activity-panel">
+          <div class="node-activity-header">
+            <span class="section-caption">Live Thinking &amp; Tool Stream</span>
+            <span class="activity-scope-badge" id="activityScopeBadge">All Nodes</span>
+          </div>
+          <ul class="node-activity-feed" id="nodeActivityFeed" role="list" aria-live="polite">
+            <li class="activity-empty">Waiting for background agent activity…</li>
+          </ul>
         </div>
       </section>
 

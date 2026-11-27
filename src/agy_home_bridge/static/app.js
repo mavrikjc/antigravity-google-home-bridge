@@ -51,6 +51,14 @@ const micToggleBtn = document.getElementById('micToggleBtn');
 const orbStateText = document.getElementById('orbStateText');
 const roomPills = document.getElementById('roomPills');
 const refreshSpeakersBtn = document.getElementById('refreshSpeakersBtn');
+const activeTvLabel = document.getElementById('activeTvLabel');
+const castHudBtn = document.getElementById('castHudBtn');
+const castHudFeedback = document.getElementById('castHudFeedback');
+const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
+const activeTargetSummary = document.getElementById('activeTargetSummary');
+const projectsNodeGrid = document.getElementById('projectsNodeGrid');
+const activityScopeBadge = document.getElementById('activityScopeBadge');
+const nodeActivityFeed = document.getElementById('nodeActivityFeed');
 const transcriptFeed = document.getElementById('transcriptFeed');
 const promptForm = document.getElementById('promptForm');
 const promptInput = document.getElementById('promptInput');
@@ -66,7 +74,10 @@ const httpsTargetUrl = isHomeDomain
   ? `https://${window.location.hostname}`
   : `https://${window.location.hostname}:8443`;
 if (openHttpsLink) {
-  openHttpsLink.href = `https://${window.location.hostname}:8443`;
+  openHttpsLink.href = httpsTargetUrl;
+  openHttpsLink.textContent = isHomeDomain
+    ? 'Open Secure HTTPS'
+    : 'Open Secure HTTPS (:8443)';
 }
 if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
   if (secureContextBanner) {
@@ -87,8 +98,90 @@ let speechRecognition = null;
 let nextPlayTime = 0;
 let activeSources = [];
 let activeRoom = '';
+let activePresenceRoom = '';
+let activeTv = '';
+let voiceStatus = 'idle';
 let routingMode = 'cast';
 let wakeLock = null;
+let knownSpeakers = [];
+let knownTvs = [];
+let projectsState = {
+  active_project_id: null,
+  active_agent_id: '101',
+  active_project_agent: null,
+  explicit_none: false,
+  pending_project_id: null,
+  projects: [],
+};
+let selectRequestSeq = 0;
+let fetchProjectsSeq = 0;
+const activeTokenEntries = new Map();
+const MAX_ACTIVITY_ITEMS = 80;
+
+function resolveActiveProjectAndAgent() {
+  const projects = Array.isArray(projectsState.projects) ? projectsState.projects : [];
+  const rawActiveId = projectsState.active_project_id;
+  const matchedById = rawActiveId
+    ? projects.find((p) => p && p.id === rawActiveId) || null
+    : null;
+  const isPendingUncached = Boolean(
+    rawActiveId && !matchedById && projectsState.pending_project_id === rawActiveId
+  );
+  const allowFallback = !projectsState.explicit_none && !isPendingUncached;
+  const activeProj = matchedById || (allowFallback ? (projects.find((p) => p && p.active) || null) : null);
+  if (!activeProj) {
+    return {
+      proj: null,
+      agent: null,
+      agentId: projectsState.active_agent_id || '101',
+      matchedById: false,
+    };
+  }
+  const agentId = matchedById
+    ? (projectsState.active_agent_id || activeProj.active_agent_id || '101')
+    : (rawActiveId ? (activeProj.active_agent_id || '101') : (projectsState.active_agent_id || activeProj.active_agent_id || '101'));
+  const agents = Array.isArray(activeProj.agents) ? activeProj.agents : [];
+  const agent = agents.find((a) => a && a.agent_id === agentId) || null;
+  return {
+    proj: activeProj,
+    agent,
+    agentId,
+    matchedById: Boolean(matchedById),
+  };
+}
+
+function normalizeActiveProjects() {
+  const projects = Array.isArray(projectsState.projects) ? projectsState.projects : [];
+  if (!projects.length) {
+    return;
+  }
+  const { proj: activeProj, agentId, matchedById } = resolveActiveProjectAndAgent();
+  if (projectsState.active_project_id && !matchedById) {
+    if (projectsState.pending_project_id === projectsState.active_project_id) {
+      for (const p of projects) {
+        if (p) p.active = false;
+      }
+      return;
+    }
+    projectsState.active_project_id = null;
+    projectsState.active_agent_id = activeProj ? agentId : null;
+    projectsState.active_project_agent = null;
+  }
+  if (!activeProj) {
+    for (const p of projects) {
+      if (p) p.active = false;
+    }
+    projectsState.active_project_agent = null;
+    return;
+  }
+  for (const p of projects) {
+    if (!p) continue;
+    p.active = p.id === activeProj.id;
+    if (p.active) {
+      p.active_agent_id = agentId;
+    }
+  }
+}
 
 function appendMessage(role, text) {
   openTranscript = null;
@@ -144,23 +237,68 @@ function setOrbState(state, label) {
   }
 }
 
-let knownSpeakers = [];
+function isTvDevice(dev) {
+  if (!dev) return false;
+  const role = String(dev.device_role || '').toLowerCase();
+  const castType = String(dev.cast_type || '').toLowerCase();
+  return role === 'tv' || castType === 'cast' || castType === 'tizen';
+}
+
+function updateTvDisplay(tvName, presenceRoom = null, tvs = null) {
+  if (tvName !== undefined && tvName !== null) {
+    activeTv = tvName;
+  }
+  if (presenceRoom) {
+    activePresenceRoom = presenceRoom;
+  }
+  if (Array.isArray(tvs)) {
+    knownTvs = tvs;
+  }
+  if (!activeTvLabel) return;
+
+  const matchedTv = knownTvs.find(
+    (t) => t && t.name && activeTv && t.name.toLowerCase() === activeTv.toLowerCase()
+  );
+  const parts = [];
+  if (activePresenceRoom) parts.push(activePresenceRoom.replace(/_/g, ' '));
+  if (activeTv) {
+    const protoSuffix = matchedTv && matchedTv.protocol ? ` (${matchedTv.protocol})` : '';
+    parts.push(`${activeTv}${protoSuffix}`);
+  } else {
+    parts.push('No TV mapped');
+  }
+  activeTvLabel.textContent = parts.join(' · ');
+}
 
 function updateRoomPills(selectedRoom, speakers = null) {
   activeRoom = selectedRoom || activeRoom;
-  activeRoomLabel.textContent = activeRoom;
-  if (Array.isArray(speakers) && speakers.length) {
-    knownSpeakers = speakers;
+  activeRoomLabel.textContent = activeRoom || 'Whole Home';
+  if (Array.isArray(speakers)) {
+    const filteredSpeakers = speakers.filter((sp) => sp && sp.name && !isTvDevice(sp));
+    const discoveredTvs = speakers.filter((sp) => sp && sp.name && isTvDevice(sp));
+    if (filteredSpeakers.length || speakers.length === 0) {
+      knownSpeakers = filteredSpeakers;
+    }
+    if (discoveredTvs.length && knownTvs.length === 0) {
+      knownTvs = discoveredTvs;
+    }
   }
 
-  // Only show speakers the server actually discovered on the LAN (no placeholder rooms).
+  // Only show speakers the server actually discovered on the LAN (no TVs or placeholders).
   const names = [];
   for (const sp of knownSpeakers) {
-    if (sp && sp.name && !names.includes(sp.name)) names.push(sp.name);
+    if (sp && sp.name && !isTvDevice(sp) && !names.includes(sp.name)) {
+      names.push(sp.name);
+    }
   }
-  if (activeRoom && !names.includes(activeRoom)) names.unshift(activeRoom);
+  if (activeRoom && !names.includes(activeRoom)) {
+    const activeIsKnownTv = knownTvs.some(
+      (t) => t && t.name && t.name.toLowerCase() === activeRoom.toLowerCase()
+    );
+    if (!activeIsKnownTv) names.unshift(activeRoom);
+  }
 
-  roomPills.innerHTML = '';
+  const buttons = [];
   for (const name of names) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -168,7 +306,512 @@ function updateRoomPills(selectedRoom, speakers = null) {
     btn.dataset.room = name;
     btn.textContent = name;
     btn.addEventListener('click', () => selectRoom(name));
-    roomPills.appendChild(btn);
+    buttons.push(btn);
+  }
+  roomPills.replaceChildren(...buttons);
+}
+
+function findProjectAgent(projectId, agentId) {
+  const proj = (projectsState.projects || []).find((p) => p && p.id === projectId);
+  if (!proj) return { proj: null, agent: null };
+  const targetAgentId = agentId || proj.active_agent_id || '101';
+  const agent = (proj.agents || []).find((a) => a && a.agent_id === targetAgentId) || null;
+  return { proj, agent };
+}
+
+function appendNodeActivity(kind, scopeLabel, bodyText, taskKey = null) {
+  if (!nodeActivityFeed) return;
+  const emptyEl = nodeActivityFeed.querySelector('.activity-empty');
+  if (emptyEl) emptyEl.remove();
+
+  const li = document.createElement('li');
+  li.className = 'node-activity-item';
+  li.dataset.kind = kind;
+  if (taskKey) li.dataset.taskKey = taskKey;
+
+  const meta = document.createElement('div');
+  meta.className = 'activity-item-meta';
+
+  const kindSpan = document.createElement('span');
+  kindSpan.textContent = kind.replace(/_/g, ' ').toUpperCase();
+  meta.appendChild(kindSpan);
+
+  if (scopeLabel) {
+    const scopeSpan = document.createElement('span');
+    scopeSpan.textContent = scopeLabel;
+    meta.appendChild(scopeSpan);
+  }
+
+  const timeSpan = document.createElement('span');
+  timeSpan.textContent = new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  meta.appendChild(timeSpan);
+
+  const body = document.createElement('p');
+  body.className = 'activity-item-body';
+  body.textContent = bodyText;
+
+  li.appendChild(meta);
+  li.appendChild(body);
+  nodeActivityFeed.appendChild(li);
+
+  while (nodeActivityFeed.children.length > MAX_ACTIVITY_ITEMS) {
+    const first = nodeActivityFeed.firstElementChild;
+    if (!first) break;
+    if (first.dataset.taskKey) {
+      activeTokenEntries.delete(first.dataset.taskKey);
+    }
+    first.remove();
+  }
+  nodeActivityFeed.scrollTop = nodeActivityFeed.scrollHeight;
+  return li;
+}
+
+function coalesceNodeToken(data) {
+  if (!nodeActivityFeed) return;
+  const key = `${data.project_id || 'default'}:${data.agent_id || '101'}:${data.task_id || 'stream'}`;
+  const chunk = data.text || '';
+  if (!chunk) return;
+
+  let entry = activeTokenEntries.get(key);
+  if (!entry || !entry.el.isConnected) {
+    const scope = data.project_agent || data.short_name || data.project_id || 'agent';
+    const li = appendNodeActivity('token', scope, chunk, key);
+    if (li) {
+      entry = { el: li, bodyEl: li.querySelector('.activity-item-body'), text: chunk };
+      activeTokenEntries.set(key, entry);
+    }
+    return;
+  }
+  entry.text += chunk;
+  if (entry.text.length > 1200) {
+    entry.text = `…${entry.text.slice(-1100)}`;
+  }
+  entry.bodyEl.textContent = entry.text;
+  nodeActivityFeed.scrollTop = nodeActivityFeed.scrollHeight;
+}
+
+function finalizeTokenPreview(data) {
+  const key = `${data.project_id || 'default'}:${data.agent_id || '101'}:${data.task_id || 'stream'}`;
+  activeTokenEntries.delete(key);
+}
+
+function renderProjectsNodeView() {
+  if (!projectsNodeGrid) return;
+  normalizeActiveProjects();
+  const projects = Array.isArray(projectsState.projects) ? projectsState.projects : [];
+  const { proj: activeProj, agent: activeAgent, agentId: activeAgentId } = resolveActiveProjectAndAgent();
+  const isPendingUncached = Boolean(
+    !activeProj &&
+    projectsState.active_project_id &&
+    projectsState.pending_project_id === projectsState.active_project_id
+  );
+  const activeLabel = activeProj
+    ? ((activeAgent && activeAgent.project_agent) ||
+       projectsState.active_project_agent ||
+       (activeProj.short_name ? `project ${activeProj.short_name}, agent ${activeAgentId}` : null) ||
+       activeProj.name ||
+       activeProj.id)
+    : ((projects.length === 0 || isPendingUncached)
+       ? (projectsState.active_project_agent || projectsState.active_project_id || 'None selected')
+       : 'None selected');
+
+  if (activeTargetSummary) {
+    activeTargetSummary.textContent = `Voice Target: ${activeLabel}`;
+  }
+  if (activityScopeBadge) {
+    activityScopeBadge.textContent = activeLabel;
+  }
+
+  if (!projects.length) {
+    const empty = document.createElement('p');
+    empty.className = 'nodes-empty';
+    empty.textContent = 'No workspaces discovered yet.';
+    projectsNodeGrid.replaceChildren(empty);
+    return;
+  }
+
+  const cards = [];
+  for (const proj of projects) {
+    if (!proj) continue;
+    const isProjActive = Boolean(activeProj && proj.id === activeProj.id);
+
+    const card = document.createElement('article');
+    card.className = 'project-node-card';
+    card.dataset.projectId = proj.id;
+    card.dataset.active = isProjActive ? 'true' : 'false';
+
+    const projBtn = document.createElement('button');
+    projBtn.type = 'button';
+    projBtn.className = 'node-select-btn project-select-btn';
+    projBtn.setAttribute('aria-pressed', isProjActive ? 'true' : 'false');
+    if (isProjActive) {
+      projBtn.setAttribute('aria-current', 'true');
+    }
+    projBtn.addEventListener('click', () => {
+      selectProjectTarget({ project: proj.id, agent: proj.active_agent_id || '101' });
+    });
+
+    const topRow = document.createElement('span');
+    topRow.className = 'project-btn-top';
+
+    const nameBlock = document.createElement('span');
+    nameBlock.className = 'project-name-block';
+    const shortEl = document.createElement('span');
+    shortEl.className = 'project-short-name';
+    shortEl.textContent = proj.short_name || proj.name || proj.id;
+    nameBlock.appendChild(shortEl);
+
+    if (proj.name && proj.short_name && proj.name !== proj.short_name) {
+      const rawEl = document.createElement('span');
+      rawEl.className = 'project-raw-name node-meta-mono';
+      rawEl.textContent = proj.name;
+      nameBlock.appendChild(rawEl);
+    }
+    topRow.appendChild(nameBlock);
+
+    const badges = document.createElement('span');
+    badges.className = 'node-badges-row';
+
+    if (isProjActive) {
+      const activeBadge = document.createElement('span');
+      activeBadge.className = 'node-badge is-active';
+      activeBadge.textContent = 'Active';
+      badges.appendChild(activeBadge);
+    }
+
+    const branchBadge = document.createElement('span');
+    branchBadge.className = 'node-badge git-branch-chip';
+    branchBadge.textContent = proj.git_branch ? `git:${proj.git_branch}` : 'no-git';
+    badges.appendChild(branchBadge);
+
+    const dirtyCount = Number(proj.uncommitted_changes || 0);
+    const dirtyBadge = document.createElement('span');
+    dirtyBadge.className = `node-badge${dirtyCount > 0 ? ' dirty' : ''}`;
+    dirtyBadge.textContent = dirtyCount > 0 ? `${dirtyCount} dirty` : 'clean';
+    badges.appendChild(dirtyBadge);
+
+    topRow.appendChild(badges);
+    projBtn.appendChild(topRow);
+    card.appendChild(projBtn);
+
+    const agentsList = document.createElement('ul');
+    agentsList.className = 'agent-node-list';
+    agentsList.setAttribute('role', 'list');
+
+    const agents = Array.isArray(proj.agents) ? proj.agents : [];
+    for (const agent of agents) {
+      if (!agent) continue;
+      const isAgentActive = isProjActive && agent.agent_id === activeAgentId;
+      const li = document.createElement('li');
+
+      const agentBtn = document.createElement('button');
+      agentBtn.type = 'button';
+      agentBtn.className = 'node-select-btn agent-select-btn';
+      agentBtn.setAttribute('aria-pressed', isAgentActive ? 'true' : 'false');
+      if (isAgentActive) {
+        agentBtn.setAttribute('aria-current', 'true');
+      }
+      agentBtn.addEventListener('click', () => {
+        selectProjectTarget({ project: proj.id, agent: agent.agent_id });
+      });
+
+      const agTop = document.createElement('span');
+      agTop.className = 'agent-btn-top';
+
+      const agName = document.createElement('span');
+      agName.className = 'agent-verbal-name';
+      agName.textContent = agent.project_agent || `${proj.short_name || proj.name}, agent ${agent.agent_id}`;
+      agTop.appendChild(agName);
+
+      const statusBadge = document.createElement('span');
+      const st = agent.status || 'idle';
+      statusBadge.className = 'node-badge';
+      statusBadge.dataset.status = st;
+      statusBadge.textContent = st;
+      agTop.appendChild(statusBadge);
+      agentBtn.appendChild(agTop);
+
+      const convEl = document.createElement('span');
+      convEl.className = 'node-meta-mono conv-id';
+      convEl.textContent = `thread: ${agent.conversation_id || 'new thread'}`;
+      agentBtn.appendChild(convEl);
+
+      const summaryText = agent.current_task || agent.last_summary;
+      if (summaryText) {
+        const sumEl = document.createElement('span');
+        sumEl.className = 'agent-summary-line';
+        sumEl.textContent = agent.current_task
+          ? `Running: ${agent.current_task}`
+          : agent.last_summary;
+        agentBtn.appendChild(sumEl);
+      }
+
+      li.appendChild(agentBtn);
+
+      const swarmNodes = Array.isArray(agent.swarm_nodes) ? agent.swarm_nodes : [];
+      if (swarmNodes.length) {
+        const swarmList = document.createElement('ul');
+        swarmList.className = 'swarm-chip-list';
+        swarmList.setAttribute('role', 'list');
+        for (const node of swarmNodes) {
+          if (!node) continue;
+          const chip = document.createElement('li');
+          chip.className = 'swarm-chip';
+          const label = node.label || node.node_id || 'swarm';
+          chip.textContent = `${label} · ${node.status || 'idle'}`;
+          swarmList.appendChild(chip);
+        }
+        li.appendChild(swarmList);
+      }
+
+      agentsList.appendChild(li);
+    }
+
+    card.appendChild(agentsList);
+    cards.push(card);
+  }
+
+  projectsNodeGrid.replaceChildren(...cards);
+}
+
+async function fetchProjects() {
+  const reqSeq = ++fetchProjectsSeq;
+  const selectSeqAtStart = selectRequestSeq;
+  try {
+    const res = await fetch('/api/projects');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (reqSeq !== fetchProjectsSeq || selectSeqAtStart !== selectRequestSeq) {
+      return null;
+    }
+    projectsState = {
+      active_project_id: data.active_project_id || null,
+      active_agent_id: data.active_agent_id || '101',
+      active_project_agent: data.active_project_agent || null,
+      explicit_none: data.active_project_id === null,
+      pending_project_id: null,
+      projects: Array.isArray(data.projects) ? data.projects : [],
+    };
+    normalizeActiveProjects();
+    renderProjectsNodeView();
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchSpeakers(refresh = false) {
+  try {
+    const url = refresh ? '/api/speakers?refresh=true' : '/api/speakers';
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const speakersList = Array.isArray(data) ? data : (data.speakers || []);
+    const tvsList = Array.isArray(data)
+      ? data.filter((d) => isTvDevice(d))
+      : (data.tvs || []);
+    updateRoomPills(data.active_room, speakersList);
+    updateTvDisplay(data.active_tv, data.active_presence_room, tvsList);
+    if (data.routing_mode) {
+      syncRoutingRadios(data.routing_mode);
+    }
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchHealth() {
+  const selectSeqAtStart = selectRequestSeq;
+  const fetchSeqAtStart = fetchProjectsSeq;
+  try {
+    const res = await fetch('/api/health');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.active_room) {
+      updateRoomPills(data.active_room);
+    }
+    updateTvDisplay(data.active_tv, data.active_presence_room);
+    if (data.routing_mode) {
+      syncRoutingRadios(data.routing_mode);
+    }
+    if (data.voice_status) {
+      voiceStatus = data.voice_status;
+    }
+    if (
+      (data.active_project_id !== undefined || data.active_project_agent !== undefined) &&
+      selectSeqAtStart === selectRequestSeq &&
+      fetchSeqAtStart === fetchProjectsSeq
+    ) {
+      if (data.active_project_id === null) {
+        projectsState.active_project_id = null;
+        projectsState.explicit_none = true;
+        projectsState.pending_project_id = null;
+        projectsState.active_project_agent = null;
+        if (data.active_agent_id !== undefined) {
+          projectsState.active_agent_id = data.active_agent_id;
+        }
+      } else {
+        const prevProjectId = projectsState.active_project_id;
+        const prevAgentId = projectsState.active_agent_id;
+        if (data.active_project_id) {
+          projectsState.active_project_id = data.active_project_id;
+          projectsState.explicit_none = false;
+          const inCache = (projectsState.projects || []).some(
+            (p) => p && p.id === data.active_project_id
+          );
+          projectsState.pending_project_id = inCache ? null : data.active_project_id;
+        }
+        projectsState.active_agent_id = data.active_agent_id || projectsState.active_agent_id;
+        if (data.active_project_agent) {
+          projectsState.active_project_agent = data.active_project_agent;
+        } else if (
+          (data.active_project_id && data.active_project_id !== prevProjectId) ||
+          (data.active_agent_id && data.active_agent_id !== prevAgentId)
+        ) {
+          const matchedProj =
+            (projectsState.projects || []).find(
+              (p) => p && p.id === projectsState.active_project_id
+            ) || null;
+          const targetAgentId =
+            projectsState.active_agent_id ||
+            (matchedProj && matchedProj.active_agent_id) ||
+            '101';
+          const matchedAgent = matchedProj
+            ? (matchedProj.agents || []).find((a) => a && a.agent_id === targetAgentId) || null
+            : null;
+          projectsState.active_project_agent =
+            (matchedAgent && matchedAgent.project_agent) ||
+            (matchedProj && matchedProj.short_name
+              ? `project ${matchedProj.short_name}, agent ${targetAgentId}`
+              : null);
+        }
+      }
+      normalizeActiveProjects();
+      renderProjectsNodeView();
+    }
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function hydrateBridgeState() {
+  await Promise.allSettled([fetchHealth(), fetchSpeakers(false), fetchProjects()]);
+}
+
+async function selectProjectTarget({ project = null, agent = null, project_agent = null }) {
+  const reqSeq = ++selectRequestSeq;
+  try {
+    const res = await fetch('/api/projects/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project, agent, project_agent }),
+    });
+    const data = await res.json();
+    if (reqSeq !== selectRequestSeq) {
+      return;
+    }
+    if (!res.ok) {
+      appendMessage('system', `Unable to switch project: ${data.detail || res.statusText}`);
+      return;
+    }
+    projectsState.active_project_id = data.project_id;
+    projectsState.active_agent_id = data.agent_id;
+    projectsState.active_project_agent = data.project_agent;
+    projectsState.explicit_none = data.project_id === null;
+    projectsState.pending_project_id =
+      data.project_id && !(projectsState.projects || []).some((p) => p && p.id === data.project_id)
+        ? data.project_id
+        : null;
+    normalizeActiveProjects();
+    for (const p of projectsState.projects || []) {
+      if (!p) continue;
+      if (p.active) {
+        const ag = (p.agents || []).find((a) => a && a.agent_id === data.agent_id);
+        if (ag && data.conversation_id) {
+          ag.conversation_id = data.conversation_id;
+        }
+      }
+    }
+    renderProjectsNodeView();
+    appendMessage('system', `Voice routing switched to ${data.project_agent}`);
+    fetchProjects();
+  } catch (err) {
+    if (reqSeq !== selectRequestSeq) {
+      return;
+    }
+    appendMessage('system', `Project selection error: ${err.message}`);
+  }
+}
+
+function renderCastHudFeedback(data) {
+  if (!castHudFeedback) return;
+  castHudFeedback.hidden = false;
+  castHudFeedback.dataset.status = data.status || 'info';
+
+  const summary = document.createElement('span');
+  const tvPart = data.tv ? `${data.tv}` : 'Room TV';
+  const protoPart = data.protocol ? ` (${data.protocol})` : '';
+  summary.textContent = `${tvPart}${protoPart}: ${data.message || data.status || 'Updated'}`;
+
+  const nodes = [summary];
+  if (data.hud_url) {
+    let safeHref = null;
+    try {
+      const baseOrigin =
+        (window.location && window.location.origin && window.location.origin !== 'null')
+          ? window.location.origin
+          : `${(window.location && window.location.protocol) || 'http:'}//${(window.location && window.location.host) || 'localhost'}`;
+      const parsed = new URL(String(data.hud_url), baseOrigin);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        safeHref = parsed.href;
+      }
+    } catch (_) {
+      safeHref = null;
+    }
+    if (safeHref) {
+      const link = document.createElement('a');
+      link.href = safeHref;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = `Open ${data.hud_url}`;
+      nodes.push(link);
+    } else {
+      const plainUrl = document.createElement('span');
+      plainUrl.className = 'node-meta-mono';
+      plainUrl.textContent = String(data.hud_url);
+      nodes.push(plainUrl);
+    }
+  }
+  castHudFeedback.replaceChildren(...nodes);
+}
+
+async function castHudToRoomTv() {
+  if (!castHudBtn) return;
+  castHudBtn.disabled = true;
+  castHudBtn.setAttribute('aria-busy', 'true');
+  try {
+    const payload = {};
+    if (activePresenceRoom) payload.room = activePresenceRoom;
+    if (activeTv) payload.tv = activeTv;
+    const res = await fetch('/api/cast/hud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    renderCastHudFeedback(data);
+    appendMessage('system', `Cast HUD (${data.tv || activePresenceRoom || 'TV'}): ${data.message || data.status}`);
+  } catch (err) {
+    renderCastHudFeedback({ status: 'error', message: err.message });
+  } finally {
+    castHudBtn.disabled = false;
+    castHudBtn.removeAttribute('aria-busy');
   }
 }
 
@@ -264,6 +907,193 @@ function speakDirectBrowser(text) {
   window.speechSynthesis.speak(utterance);
 }
 
+function handleEventHubMessage(data) {
+  const scope = data.project_agent || data.short_name || data.project_id || '';
+  if (data.type === 'hud_snapshot') {
+    ++fetchProjectsSeq;
+    if (data.active_room) updateRoomPills(data.active_room);
+    updateTvDisplay(data.active_tv, data.active_presence_room);
+    if (data.voice_status) voiceStatus = data.voice_status;
+    if (data.active_project_id !== undefined) {
+      projectsState.active_project_id = data.active_project_id;
+    }
+    if (data.active_agent_id !== undefined) {
+      projectsState.active_agent_id = data.active_agent_id;
+    }
+    if (data.active_project_agent !== undefined) {
+      projectsState.active_project_agent = data.active_project_agent;
+    }
+    if (Array.isArray(data.projects)) {
+      projectsState.projects = data.projects;
+    }
+    if (data.active_project_id === null) {
+      projectsState.explicit_none = true;
+      projectsState.pending_project_id = null;
+      for (const p of projectsState.projects || []) {
+        if (p) p.active = false;
+      }
+      if (data.active_project_agent === undefined) {
+        projectsState.active_project_agent = null;
+      }
+    } else if (data.active_project_id) {
+      projectsState.explicit_none = false;
+      projectsState.pending_project_id = null;
+    }
+    if (
+      Array.isArray(data.projects) ||
+      data.active_project_id !== undefined ||
+      data.active_agent_id !== undefined ||
+      data.active_project_agent !== undefined
+    ) {
+      normalizeActiveProjects();
+      renderProjectsNodeView();
+    }
+    return true;
+  }
+
+  if (data.type === 'project_changed') {
+    ++fetchProjectsSeq;
+    const nextProjectId =
+      data.project_id !== undefined ? data.project_id : projectsState.active_project_id;
+    const projectChanged = nextProjectId !== projectsState.active_project_id;
+    projectsState.active_project_id = nextProjectId;
+    if (data.project_id === null) {
+      projectsState.explicit_none = true;
+      projectsState.pending_project_id = null;
+    } else if (nextProjectId) {
+      projectsState.explicit_none = false;
+      const inCache = (projectsState.projects || []).some((p) => p && p.id === nextProjectId);
+      projectsState.pending_project_id = inCache ? null : nextProjectId;
+    }
+    if (data.agent_id !== undefined) {
+      projectsState.active_agent_id = data.agent_id;
+    } else if (projectChanged) {
+      const matchedTarget =
+        (projectsState.projects || []).find((p) => p && p.id === nextProjectId) || null;
+      projectsState.active_agent_id = (matchedTarget && matchedTarget.active_agent_id) || '101';
+    }
+    if (data.project_agent !== undefined) {
+      projectsState.active_project_agent = data.project_agent;
+    } else {
+      const matchedProj =
+        (projectsState.projects || []).find((p) => p && p.id === projectsState.active_project_id) ||
+        null;
+      const targetAgentId =
+        projectsState.active_agent_id || (matchedProj && matchedProj.active_agent_id) || '101';
+      const matchedAgent = matchedProj
+        ? (matchedProj.agents || []).find((a) => a && a.agent_id === targetAgentId) || null
+        : null;
+      projectsState.active_project_agent =
+        (matchedAgent && matchedAgent.project_agent) ||
+        (data.short_name ? `project ${data.short_name}, agent ${targetAgentId}` : null) ||
+        (data.project_name ? `project ${data.project_name}, agent ${targetAgentId}` : null) ||
+        (matchedProj && matchedProj.short_name
+          ? `project ${matchedProj.short_name}, agent ${targetAgentId}`
+          : null);
+    }
+    normalizeActiveProjects();
+    renderProjectsNodeView();
+    appendNodeActivity(
+      'project_changed',
+      scope || projectsState.active_project_agent || '',
+      `Switched active target to ${projectsState.active_project_agent || data.project_id || 'project'}`
+    );
+    fetchProjects();
+    return true;
+  }
+
+  if (data.type === 'room_changed') {
+    if (data.active_room) {
+      updateRoomPills(data.active_room);
+    }
+    updateTvDisplay(data.active_tv, data.active_presence_room || data.presence_room);
+    statusSubtitle.textContent = `Connected · Speaker: ${activeRoom || 'Whole Home'}`;
+    appendNodeActivity(
+      'room_changed',
+      data.active_presence_room || data.presence_room || 'presence',
+      `Speaker: ${data.active_room || activeRoom || 'none'} · TV: ${data.active_tv || 'none'}`
+    );
+    return true;
+  }
+
+  if (data.type === 'task_started') {
+    const { agent } = findProjectAgent(data.project_id, data.agent_id);
+    if (agent) {
+      agent.status = 'running';
+      agent.current_task = data.prompt || 'Running task…';
+      if (data.conversation_id) agent.conversation_id = data.conversation_id;
+      renderProjectsNodeView();
+    }
+    appendNodeActivity('task_started', scope, data.prompt || 'Task started');
+    return true;
+  }
+
+  if (data.type === 'thought') {
+    appendNodeActivity('thought', scope, data.text || '');
+    return true;
+  }
+
+  if (data.type === 'tool_result') {
+    let resultStr = 'ok';
+    if (data.result !== undefined && data.result !== null && data.result !== '') {
+      resultStr = typeof data.result === 'object' ? JSON.stringify(data.result) : String(data.result);
+    }
+    const hasError = data.error !== undefined && data.error !== null && data.error !== '';
+    const errStr = hasError
+      ? (typeof data.error === 'object' ? JSON.stringify(data.error) : String(data.error))
+      : '';
+    const body = hasError
+      ? `✖ ${data.name || 'tool'}: ${errStr}`
+      : `✓ ${data.name || 'tool'}: ${resultStr}`;
+    appendNodeActivity('tool_result', scope, body);
+    if (data.name === 'start_subagent') {
+      fetchProjects();
+    }
+    return true;
+  }
+
+  if (data.type === 'token') {
+    coalesceNodeToken(data);
+    return true;
+  }
+
+  if (data.type === 'task_completed') {
+    finalizeTokenPreview(data);
+    const { agent } = findProjectAgent(data.project_id, data.agent_id);
+    if (agent) {
+      agent.status = 'idle';
+      agent.current_task = null;
+      agent.last_summary = data.summary || data.text || agent.last_summary;
+      if (data.conversation_id) agent.conversation_id = data.conversation_id;
+      renderProjectsNodeView();
+    }
+    appendNodeActivity('task_completed', scope, data.summary || data.text || 'Completed');
+    fetchProjects();
+    return true;
+  }
+
+  if (data.type === 'task_failed') {
+    finalizeTokenPreview(data);
+    const { agent } = findProjectAgent(data.project_id, data.agent_id);
+    if (agent) {
+      agent.status = 'error';
+      agent.current_task = null;
+      agent.last_summary = data.error || 'Task failed';
+      renderProjectsNodeView();
+    }
+    appendNodeActivity('task_failed', scope, data.error || 'Task failed');
+    return true;
+  }
+
+  if (data.type === 'voice_status') {
+    voiceStatus = data.voice_status || data.status || voiceStatus;
+    if (data.active_room) updateRoomPills(data.active_room);
+    return true;
+  }
+
+  return false;
+}
+
 // WebSocket Connection to Proxmox Antigravity Live Server
 function connectWebSocket() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -271,23 +1101,34 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     connDot.classList.add('online');
-    statusSubtitle.textContent = `Connected · Following in ${activeRoom}`;
+    statusSubtitle.textContent = `Connected · Following in ${activeRoom || 'Whole Home'}`;
   };
 
   ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch (_) {
+      return;
+    }
 
     if (data.type === 'status') {
       if (data.mode) {
         serverMode = data.mode;
       }
-      if (data.active_room) {
-        updateRoomPills(data.active_room, data.speakers || []);
+      if (data.active_room || Array.isArray(data.speakers)) {
+        updateRoomPills(data.active_room, data.speakers || null);
+      }
+      if (data.active_tv !== undefined || data.active_presence_room) {
+        updateTvDisplay(data.active_tv, data.active_presence_room, data.tvs || null);
       }
       if (data.routing_mode) {
         syncRoutingRadios(data.routing_mode);
       }
-      statusSubtitle.textContent = `Live (${data.state || 'ready'}) · Speaker: ${activeRoom}`;
+      if (data.state) {
+        voiceStatus = data.state;
+      }
+      statusSubtitle.textContent = `Live (${data.state || 'ready'}) · Speaker: ${activeRoom || 'Whole Home'}`;
       if (data.state === 'thinking') {
         setOrbState('thinking', 'Thinking…');
       } else if (data.state === 'listening' && isLiveMicActive) {
@@ -301,12 +1142,23 @@ function connectWebSocket() {
         speakDirectBrowser(data.text);
       }
     } else if (data.type === 'tool_call') {
-      appendMessage('tool', `⚡ ${data.name}(${JSON.stringify(data.args)}) → ${data.result}`);
-      if (data.active_room) {
-        updateRoomPills(data.active_room);
+      const argsStr = JSON.stringify(data.args || {});
+      if (data.task_id || data.project_id || data.result === undefined) {
+        const scope = data.project_agent || data.short_name || data.project_id || '';
+        appendNodeActivity('tool_call', scope, `⚡ ${data.name}(${argsStr})`);
+      } else {
+        appendMessage('tool', `⚡ ${data.name}(${argsStr}) → ${data.result}`);
+        if (data.active_room) {
+          updateRoomPills(data.active_room);
+        }
+        if (data.name === 'switch_project') {
+          fetchProjects();
+        }
       }
     } else if (data.type === 'interrupted') {
       setOrbState(isLiveMicActive ? 'listening' : 'idle', isLiveMicActive ? 'Listening Live' : 'Tap to Go Live');
+    } else {
+      handleEventHubMessage(data);
     }
   };
 
@@ -328,7 +1180,7 @@ async function toggleLiveMicrophone() {
     if (secureContextBanner) secureContextBanner.hidden = false;
     appendMessage(
       'system',
-      `Mobile browsers require HTTPS for microphone access. Tap "Open Secure HTTPS (:8443)" above or go to ${httpsTargetUrl}`
+      `Mobile browsers require HTTPS for microphone access. Tap the secure HTTPS link above or go to ${httpsTargetUrl}`
     );
     window.location.href = httpsTargetUrl;
     return;
@@ -507,14 +1359,32 @@ promptForm.addEventListener('submit', (e) => {
 refreshSpeakersBtn.addEventListener('click', async () => {
   refreshSpeakersBtn.textContent = 'Scanning…';
   try {
-    const res = await fetch('/api/speakers?refresh=true');
-    const data = await res.json();
-    updateRoomPills(data.active_room, data.speakers);
-    appendMessage('system', `Found ${data.speakers.length} Google Home speaker(s) on LAN.`);
+    const data = await fetchSpeakers(true);
+    if (data) {
+      const speakersCount = Array.isArray(data)
+        ? data.filter((d) => !isTvDevice(d)).length
+        : (data.speakers || []).filter((d) => !isTvDevice(d)).length;
+      appendMessage('system', `Found ${speakersCount} Google Home speaker(s) on LAN.`);
+    }
   } finally {
     refreshSpeakersBtn.textContent = 'Scan LAN';
   }
 });
+
+if (castHudBtn) {
+  castHudBtn.addEventListener('click', castHudToRoomTv);
+}
+
+if (refreshProjectsBtn) {
+  refreshProjectsBtn.addEventListener('click', async () => {
+    refreshProjectsBtn.textContent = 'Refreshing…';
+    try {
+      await fetchProjects();
+    } finally {
+      refreshProjectsBtn.textContent = 'Refresh';
+    }
+  });
+}
 
 addCustomRoomBtn.addEventListener('click', () => {
   const room = customRoomInput.value.trim();
@@ -536,4 +1406,5 @@ for (const pill of roomPills.querySelectorAll('.room-pill')) {
   pill.addEventListener('click', () => selectRoom(pill.dataset.room));
 }
 
+hydrateBridgeState();
 connectWebSocket();

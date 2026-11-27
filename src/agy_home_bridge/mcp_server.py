@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sys
 from typing import Any
 
 from agy_home_bridge.antigravity_agent import AntigravityAgentEngine
-from agy_home_bridge.cast_manager import GoogleHomeCastManager
+from agy_home_bridge.cast_manager import GoogleHomeCastManager, normalize_room_key
 
 
 class BridgeMCPServer:
@@ -86,9 +87,34 @@ class BridgeMCPServer:
 
     async def handle_jsonrpc(self, request: dict[str, Any]) -> dict[str, Any]:
         """Process a single MCP JSON-RPC 2.0 message."""
+        if not isinstance(request, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            }
         req_id = request.get("id")
-        method = request.get("method", "")
-        params = request.get("params", {}) or {}
+        method = request.get("method")
+        if not isinstance(method, str) or not method.strip():
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: 'method' must be a non-empty string",
+                },
+            }
+        raw_params = request.get("params")
+        if "params" in request and raw_params is not None and not isinstance(raw_params, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32602,
+                    "message": "Invalid params: 'params' must be an object",
+                },
+            }
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
 
         if method == "initialize":
             return {
@@ -112,15 +138,66 @@ class BridgeMCPServer:
             }
 
         if method == "tools/call":
-            tool_name = params.get("name", "")
-            args = params.get("arguments", {}) or {}
+            tool_name = params.get("name")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "Invalid params: 'name' must be a non-empty string",
+                    },
+                }
+            raw_args = params.get("arguments")
+            if "arguments" in params and raw_args is not None and not isinstance(raw_args, dict):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "Invalid params: 'arguments' must be an object",
+                    },
+                }
+            args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
 
             if tool_name == "speak_on_google_home":
-                res = await self.cast_manager.speak_on_room(
-                    text=args.get("message", ""),
-                    room_name=args.get("room"),
-                    volume=args.get("volume"),
-                )
+                message = args.get("message", "")
+                room_arg = args.get("room")
+                volume_arg = args.get("volume")
+                if not isinstance(message, str):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": "Invalid params: 'message' must be a string"},
+                    }
+                if room_arg is not None and not isinstance(room_arg, str):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": "Invalid params: 'room' must be a string"},
+                    }
+                if volume_arg is not None and (
+                    isinstance(volume_arg, bool)
+                    or not isinstance(volume_arg, (int, float))
+                    or not math.isfinite(volume_arg)
+                ):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": "Invalid params: 'volume' must be a finite number"},
+                    }
+                try:
+                    res = await self.cast_manager.speak_on_room(
+                        text=message,
+                        room_name=room_arg,
+                        volume=volume_arg,
+                    )
+                except ValueError as exc:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": str(exc)},
+                    }
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -130,7 +207,33 @@ class BridgeMCPServer:
                 }
 
             if tool_name == "switch_active_google_home_room":
-                room = self.cast_manager.set_active_room(args.get("room", ""))
+                room_arg = args.get("room", "")
+                if not isinstance(room_arg, str) or not room_arg.strip():
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "Invalid params: 'room' must be a non-empty string",
+                        },
+                    }
+                if not normalize_room_key(room_arg):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "Invalid params: 'room' must contain at least one alphanumeric character",
+                        },
+                    }
+                try:
+                    room = self.cast_manager.set_active_room(room_arg)
+                except ValueError as exc:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": str(exc)},
+                    }
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -145,7 +248,17 @@ class BridgeMCPServer:
                 }
 
             if tool_name == "list_google_home_speakers":
-                if args.get("refresh"):
+                refresh_arg = args.get("refresh", False)
+                if not isinstance(refresh_arg, bool):
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "Invalid params: 'refresh' must be a boolean",
+                        },
+                    }
+                if refresh_arg:
                     await self.cast_manager.discover_speakers()
                 payload = {
                     "active_room": self.cast_manager.active_room,
@@ -190,11 +303,14 @@ async def run_stdio_mcp_loop(mcp_server: BridgeMCPServer) -> None:
         if not text:
             continue
         try:
-            req = json.loads(text)
+            def _reject_constant(val: str) -> Any:
+                raise ValueError(f"Non-standard JSON constant {val!r} is not allowed")
+
+            req = json.loads(text, parse_constant=_reject_constant)
             if "id" not in req:
                 continue
             resp = await mcp_server.handle_jsonrpc(req)
-            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.write(json.dumps(resp, allow_nan=False) + "\n")
             sys.stdout.flush()
         except Exception as exc:
             sys.stderr.write(f"MCP stdio error: {exc}\n")
