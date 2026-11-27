@@ -859,14 +859,10 @@ class FullDuplexLiveBridge:
                                     },
                                 )
 
-                    # Stream phrases early to Google Home rather than waiting for the entire turn:
-                    # flush on sentence punctuation (>=0.8s audio) or after ~2.0s on phrase #1.
+                    # Flush mid-turn only for very long (>8s) monologues so normal replies
+                    # play as a single seamless WAV with zero Cast queue cutoff at the end.
                     if self.cast_manager.routing_mode in ("cast", "both") and turn_pcm_buffer:
-                        stripped = last_agent_tr.rstrip()
-                        at_sentence_end = stripped.endswith((".", "!", "?"))
-                        if (at_sentence_end and len(turn_pcm_buffer) >= 38400) or (
-                            phrase_idx == 0 and len(turn_pcm_buffer) >= 96000
-                        ):
+                        if len(turn_pcm_buffer) >= 384000:  # 8.0s @ 24kHz 16-bit mono
                             await _flush_cast_phrase()
                             last_agent_tr = ""
 

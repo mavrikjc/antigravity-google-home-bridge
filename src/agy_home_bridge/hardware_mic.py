@@ -136,8 +136,7 @@ class HardwareMicDaemon:
                 try:
                     async with websockets.connect(
                         target_ws,
-                        ping_interval=15,
-                        ping_timeout=30,
+                        ping_interval=None,
                     ) as ws:
                         # Identify as a hardware mic without AEC and force cast output
                         await ws.send(
