@@ -232,6 +232,7 @@ class GoogleHomeCastManager:
         pcm_bytes: bytes,
         sample_rate: int = 24000,
         room_name: str | None = None,
+        enqueue: bool = False,
     ) -> dict[str, Any]:
         """Cast raw 16-bit PCM audio response from Gemini Live directly to a Google Home speaker."""
         target_query = room_name or self._active_room
@@ -243,7 +244,12 @@ class GoogleHomeCastManager:
         media_url = f"{self.config.base_lan_url}/api/tts/{wav_path.name}"
 
         cast_result = await asyncio.to_thread(
-            self._cast_url_sync, resolved_name, media_url, "audio/wav", None
+            self._cast_url_sync,
+            resolved_name,
+            media_url,
+            "audio/wav",
+            None,
+            enqueue,
         )
         return {
             "status": cast_result["status"],
@@ -252,20 +258,73 @@ class GoogleHomeCastManager:
             "detail": cast_result.get("detail", ""),
         }
 
+    async def warm_room(self, room_name: str | None = None) -> None:
+        """Pre-warm the Google Home Default Media Receiver so subsequent casts start in ~0.4s."""
+        target_query = room_name or self._active_room
+        resolved_name = self.resolve_room_name(target_query) or target_query
+        await asyncio.to_thread(self._warm_room_sync, resolved_name)
+
+    def _warm_room_sync(self, speaker_name: str) -> None:
+        cc = self._lookup_chromecast(speaker_name)
+        if cc is None:
+            return
+        try:
+            cc.wait(timeout=4.0)
+            if cc.app_id == "CC1AD845":
+                return  # Already warm on Default Media Receiver
+            silence_path = self.config.tts_cache_dir / "warmup_silence.wav"
+            if not silence_path.exists():
+                with wave.open(str(silence_path), "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(24000)
+                    wf.writeframes(b"\x00\x00" * 12000)  # 0.5s silence
+            media_url = f"{self.config.base_lan_url}/api/tts/{silence_path.name}"
+            mc = cc.media_controller
+            mc.play_media(
+                media_url,
+                "audio/wav",
+                title="Antigravity Live Ready",
+                stream_type="BUFFERED",
+            )
+            mc.block_until_active(timeout=5.0)
+            logger.info("Pre-warmed Google Home receiver for '%s'", speaker_name)
+        except Exception as exc:
+            logger.debug("Receiver pre-warm skipped for '%s': %s", speaker_name, exc)
+
+    async def stop_room(self, room_name: str | None = None) -> None:
+        """Stop current playback on the Google Home speaker (used for instant barge-in)."""
+        target_query = room_name or self._active_room
+        resolved_name = self.resolve_room_name(target_query) or target_query
+        await asyncio.to_thread(self._stop_room_sync, resolved_name)
+
+    def _stop_room_sync(self, speaker_name: str) -> None:
+        cc = self._lookup_chromecast(speaker_name)
+        if cc is None:
+            return
+        try:
+            cc.media_controller.stop()
+        except Exception as exc:
+            logger.debug("Stop cast failed for '%s': %s", speaker_name, exc)
+
+    def _lookup_chromecast(self, speaker_name: str) -> Any:
+        cc = self._chromecasts.get(speaker_name)
+        if cc is not None:
+            return cc
+        for name, dev in self._chromecasts.items():
+            if name.lower() == speaker_name.lower():
+                return dev
+        return None
+
     def _cast_url_sync(
         self,
         speaker_name: str,
         media_url: str,
         content_type: str,
         volume: float | None = None,
+        enqueue: bool = False,
     ) -> dict[str, str]:
-        cc = self._chromecasts.get(speaker_name)
-        if cc is None:
-            # Try case-insensitive lookup
-            for name, dev in self._chromecasts.items():
-                if name.lower() == speaker_name.lower():
-                    cc = dev
-                    break
+        cc = self._lookup_chromecast(speaker_name)
 
         if cc is None:
             logger.warning(
@@ -290,9 +349,11 @@ class GoogleHomeCastManager:
                 content_type,
                 title="Antigravity Live",
                 stream_type="BUFFERED",
+                enqueue=enqueue,
             )
-            mc.block_until_active(timeout=5.0)
-            logger.info("Casting %s to Google Home '%s'", media_url, speaker_name)
+            if not enqueue:
+                mc.block_until_active(timeout=5.0)
+            logger.info("Casting %s to Google Home '%s' (enqueue=%s)", media_url, speaker_name, enqueue)
             return {
                 "status": "casting",
                 "detail": f"Playing {media_url} on {speaker_name}",

@@ -38,6 +38,8 @@ class BridgeSettings(BaseSettings):
     # Set true only for Vertex AI Express Mode keys; AI Studio keys (AIza... or AQ...) use the Gemini Developer API.
     gemini_use_vertex: bool = Field(default=False, alias="GEMINI_USE_VERTEX")
     gemini_live_voice: str = Field(default="Puck", alias="GEMINI_LIVE_VOICE")
+    # How long a pause ends your turn. Lower = snappier replies, but may cut you off mid-thought.
+    gemini_live_silence_ms: int = Field(default=500, alias="GEMINI_LIVE_SILENCE_MS")
 
     agy_workspace_dir: str = Field(
         default_factory=lambda: os.getcwd(), alias="AGY_WORKSPACE_DIR"

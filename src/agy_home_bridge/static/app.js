@@ -77,23 +77,64 @@ if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevice
 // State
 let ws = null;
 let isLiveMicActive = false;
-let audioCtx = null;
+let audioCtx = null; // playback context (24 kHz Gemini audio)
+let captureCtx = null; // mic capture context (device-native rate)
+let serverMode = null; // 'gemini-live-native-audio' when the server streams mic audio to Gemini
 let micStream = null;
 let processorNode = null;
 let analyserNode = null;
 let speechRecognition = null;
 let nextPlayTime = 0;
 let activeSources = [];
-let activeRoom = 'Whole Home';
-let routingMode = 'both';
+let activeRoom = '';
+let routingMode = 'cast';
 let wakeLock = null;
 
 function appendMessage(role, text) {
+  openTranscript = null;
   const div = document.createElement('div');
   div.className = `msg msg-${role}`;
   div.textContent = text;
   transcriptFeed.appendChild(div);
   transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+}
+
+// Live transcription arrives as word-level fragments: grow one bubble per speaker turn.
+let openTranscript = null;
+function appendTranscript(role, text, partial) {
+  if (!partial) {
+    appendMessage(role, text);
+    return;
+  }
+  if (!openTranscript || openTranscript.role !== role) {
+    appendMessage(role, '');
+    openTranscript = { role, el: transcriptFeed.lastElementChild };
+  }
+  openTranscript.el.textContent += text;
+  transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+}
+
+function int16ToBase64(int16) {
+  const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function downsampleTo16k(input, inRate) {
+  if (inRate === 16000) return input;
+  const ratio = inRate / 16000;
+  const out = new Float32Array(Math.floor(input.length / ratio));
+  for (let o = 0; o < out.length; o++) {
+    const start = Math.floor(o * ratio);
+    const end = Math.min(input.length, Math.floor((o + 1) * ratio));
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += input[i];
+    out[o] = sum / Math.max(1, end - start);
+  }
+  return out;
 }
 
 function setOrbState(state, label) {
@@ -237,6 +278,9 @@ function connectWebSocket() {
     const data = JSON.parse(event.data);
 
     if (data.type === 'status') {
+      if (data.mode) {
+        serverMode = data.mode;
+      }
       if (data.active_room) {
         updateRoomPills(data.active_room, data.speakers || []);
       }
@@ -252,7 +296,7 @@ function connectWebSocket() {
     } else if (data.type === 'audio_chunk') {
       playPcmChunk(data.pcm_b64, data.sample_rate || 24000);
     } else if (data.type === 'transcript') {
-      appendMessage(data.role === 'user' ? 'user' : 'agent', data.text);
+      appendTranscript(data.role === 'user' ? 'user' : 'agent', data.text, Boolean(data.partial));
       if (data.role === 'agent' && data.speak_direct) {
         speakDirectBrowser(data.text);
       }
@@ -297,54 +341,60 @@ async function toggleLiveMicrophone() {
         noiseSuppression: true,
         autoGainControl: true,
         channelCount: 1,
-        sampleRate: 16000,
       },
     });
 
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    const source = audioCtx.createMediaStreamSource(micStream);
-    analyserNode = audioCtx.createAnalyser();
+    // Capture at the device's native rate (iOS often ignores 16 kHz requests and would
+    // hand us 48 kHz audio mislabeled as 16 kHz). We downsample to 16 kHz ourselves.
+    captureCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = captureCtx.createMediaStreamSource(micStream);
+    analyserNode = captureCtx.createAnalyser();
     analyserNode.fftSize = 256;
     source.connect(analyserNode);
 
-    // Stream 16kHz 16-bit PCM to server & run local energy barge-in detector
-    processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
-    source.connect(processorNode);
-    processorNode.connect(audioCtx.destination);
-
-    processorNode.onaudioprocess = (e) => {
+    const handleFrame = (int16, rms) => {
       if (!isLiveMicActive || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const input = e.inputBuffer.getChannelData(0);
-
-      // Compute RMS for instant barge-in while Antigravity is speaking
-      let sumSq = 0;
-      const int16 = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const s = Math.max(-1, Math.min(1, input[i]));
-        sumSq += s * s;
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      const rms = Math.sqrt(sumSq / input.length);
+      // Local barge-in only matters when audio plays on this device
       if (rms > 0.045 && (activeSources.length > 0 || (window.speechSynthesis && window.speechSynthesis.speaking))) {
         triggerBargeIn();
       }
-
-      const bytes = new Uint8Array(int16.buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      ws.send(JSON.stringify({ type: 'audio_chunk', pcm_b64: btoa(binary) }));
+      ws.send(JSON.stringify({ type: 'audio_chunk', pcm_b64: int16ToBase64(int16) }));
     };
 
-    // Also start continuous Web Speech Recognition for immediate live transcript & offline fallback
+    if (captureCtx.audioWorklet) {
+      await captureCtx.audioWorklet.addModule('/static/mic-worklet.js');
+      processorNode = new AudioWorkletNode(captureCtx, 'mic-capture');
+      processorNode.port.onmessage = (e) => handleFrame(new Int16Array(e.data.pcm), e.data.rms);
+      source.connect(processorNode);
+    } else {
+      // Fallback for browsers without AudioWorklet: ScriptProcessor + JS downsampling
+      processorNode = captureCtx.createScriptProcessor(1024, 1, 1);
+      source.connect(processorNode);
+      processorNode.connect(captureCtx.destination);
+      processorNode.onaudioprocess = (e) => {
+        const down = downsampleTo16k(e.inputBuffer.getChannelData(0), captureCtx.sampleRate);
+        let sumSq = 0;
+        const int16 = new Int16Array(down.length);
+        for (let i = 0; i < down.length; i++) {
+          const s = Math.max(-1, Math.min(1, down[i]));
+          sumSq += s * s;
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        handleFrame(int16, Math.sqrt(sumSq / Math.max(1, down.length)));
+      };
+    }
+
+    // Web Speech is only used when the server is in turn-based fallback mode. With native
+    // Gemini Live audio the server already hears the mic stream, so sending recognized text
+    // too would make Gemini answer the same request twice.
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRec) {
+    if (SpeechRec && serverMode !== 'gemini-live-native-audio') {
       speechRecognition = new SpeechRec();
       speechRecognition.continuous = true;
       speechRecognition.interimResults = false;
       speechRecognition.lang = 'en-US';
       speechRecognition.onresult = (evt) => {
+        if (serverMode === 'gemini-live-native-audio') return;
         const last = evt.results[evt.results.length - 1];
         if (last && last.isFinal) {
           const phrase = last[0].transcript.trim();
@@ -395,7 +445,12 @@ function stopLiveMicrophone() {
   }
   if (processorNode) {
     processorNode.disconnect();
+    if (processorNode.port) processorNode.port.onmessage = null;
     processorNode = null;
+  }
+  if (captureCtx) {
+    captureCtx.close().catch(() => {});
+    captureCtx = null;
   }
   if (micStream) {
     for (const track of micStream.getTracks()) track.stop();

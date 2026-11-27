@@ -244,6 +244,14 @@ async def test_cast_manager_discovery_wav_and_playback(test_settings: BridgeSett
         )
         assert err_res["status"] == "error"
 
+        # Test warm_room & stop_room helpers
+        fake_cc.wait.side_effect = None
+        fake_cc.app_id = None
+        await cast_mgr.warm_room("Living Room Speaker")
+        assert (test_settings.tts_cache_dir / "warmup_silence.wav").exists()
+        await cast_mgr.stop_room("Living Room Speaker")
+        fake_cc.media_controller.stop.assert_called_once()
+
 
 # ============================================================================
 # 4. Antigravity Agent Engine Tests (Custom Tools, SDK, GenAI, LS Tiers)

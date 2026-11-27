@@ -148,12 +148,33 @@ class FullDuplexLiveBridge:
                     ]
                 ),
                 tools=[genai_types.Tool(function_declarations=tool_declarations)],
+                speech_config=genai_types.SpeechConfig(
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                            voice_name=self.config.gemini_live_voice
+                        )
+                    )
+                ),
+                # Respond quickly once the user stops talking (default waits longer).
+                realtime_input_config=genai_types.RealtimeInputConfig(
+                    automatic_activity_detection=genai_types.AutomaticActivityDetection(
+                        end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
+                        silence_duration_ms=self.config.gemini_live_silence_ms,
+                        prefix_padding_ms=100,
+                    )
+                ),
+                # Server-side transcripts replace the phone's Web Speech recognition.
+                input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+                output_audio_transcription=genai_types.AudioTranscriptionConfig(),
             )
 
             async with client.aio.live.connect(
                 model=self.config.gemini_live_model,
                 config=live_config,
             ) as session:
+                if self.cast_manager.routing_mode in ("cast", "both"):
+                    asyncio.create_task(self.cast_manager.warm_room())
+
                 await self._send_json(
                     websocket,
                     {
@@ -229,9 +250,12 @@ class FullDuplexLiveBridge:
                         turn_complete=True,
                     )
             elif msg_type == "barge_in":
+                self._on_live_interrupted()
                 await self._send_json(websocket, {"type": "interrupted"})
             elif msg_type == "set_room":
                 room = self.cast_manager.set_active_room(msg.get("room", ""))
+                if self.cast_manager.routing_mode in ("cast", "both"):
+                    asyncio.create_task(self.cast_manager.warm_room(room))
                 await self._send_json(
                     websocket,
                     {
@@ -252,11 +276,51 @@ class FullDuplexLiveBridge:
                     },
                 )
 
+    def _on_live_interrupted(self) -> None:
+        """Stop active Google Home speaker playback immediately on barge-in."""
+        if self.cast_manager.routing_mode in ("cast", "both"):
+            try:
+                asyncio.create_task(self.cast_manager.stop_room())
+            except RuntimeError:
+                pass
+
     async def _forward_gemini_to_client(
         self, websocket: WebSocket, session: Any
     ) -> None:
         turn_pcm_buffer = bytearray()
         turn_text_chunks: list[str] = []
+        phrase_idx = 0
+        last_agent_tr = ""
+        cast_tasks: list[asyncio.Task[Any]] = []
+
+        async def _flush_cast_phrase() -> None:
+            nonlocal phrase_idx
+            if (
+                self.cast_manager.routing_mode not in ("cast", "both")
+                or not turn_pcm_buffer
+            ):
+                return
+            pcm_copy = bytes(turn_pcm_buffer)
+            turn_pcm_buffer.clear()
+            enqueue = phrase_idx > 0
+            phrase_idx += 1
+            # Ensure sequential ordering if a previous phrase task is still uploading
+            prev = cast_tasks[-1] if cast_tasks else None
+
+            async def _run_cast() -> None:
+                if prev is not None and not prev.done():
+                    try:
+                        await prev
+                    except Exception:
+                        pass
+                await self.cast_manager.cast_pcm_audio(
+                    pcm_copy,
+                    sample_rate=24000,
+                    room_name=self.cast_manager.active_room,
+                    enqueue=enqueue,
+                )
+
+            cast_tasks.append(asyncio.create_task(_run_cast()))
 
         async def _receive_across_turns() -> Any:
             # google-genai's session.receive() ends after each turn (including tool-call
@@ -275,8 +339,30 @@ class FullDuplexLiveBridge:
                 if getattr(server_content, "interrupted", False):
                     turn_pcm_buffer.clear()
                     turn_text_chunks.clear()
+                    phrase_idx = 0
+                    last_agent_tr = ""
+                    self._on_live_interrupted()
                     await self._send_json(websocket, {"type": "interrupted"})
                     continue
+
+                for attr, role in (
+                    ("input_transcription", "user"),
+                    ("output_transcription", "agent"),
+                ):
+                    tr = getattr(server_content, attr, None)
+                    tr_text = getattr(tr, "text", None) if tr is not None else None
+                    if isinstance(tr_text, str) and tr_text:
+                        if role == "agent":
+                            last_agent_tr += tr_text
+                        await self._send_json(
+                            websocket,
+                            {
+                                "type": "transcript",
+                                "role": role,
+                                "text": tr_text,
+                                "partial": True,
+                            },
+                        )
 
                 model_turn = getattr(server_content, "model_turn", None)
                 if model_turn is not None:
@@ -308,19 +394,22 @@ class FullDuplexLiveBridge:
                                 },
                             )
 
+                # Stream phrases early to Google Home rather than waiting for the entire turn:
+                # flush on sentence punctuation (>=0.8s audio) or after ~2.0s on phrase #1.
+                if self.cast_manager.routing_mode in ("cast", "both") and turn_pcm_buffer:
+                    stripped = last_agent_tr.rstrip()
+                    at_sentence_end = stripped.endswith((".", "!", "?"))
+                    if (at_sentence_end and len(turn_pcm_buffer) >= 38400) or (
+                        phrase_idx == 0 and len(turn_pcm_buffer) >= 96000
+                    ):
+                        await _flush_cast_phrase()
+                        last_agent_tr = ""
+
                 if getattr(server_content, "turn_complete", False):
-                    # Cast the completed turn to the active Google Home room speaker if cast routing is enabled
                     if self.cast_manager.routing_mode in ("cast", "both"):
                         if turn_pcm_buffer:
-                            pcm_copy = bytes(turn_pcm_buffer)
-                            asyncio.create_task(
-                                self.cast_manager.cast_pcm_audio(
-                                    pcm_copy,
-                                    sample_rate=24000,
-                                    room_name=self.cast_manager.active_room,
-                                )
-                            )
-                        elif turn_text_chunks:
+                            await _flush_cast_phrase()
+                        elif turn_text_chunks and phrase_idx == 0:
                             full_text = "".join(turn_text_chunks).strip()
                             if full_text:
                                 asyncio.create_task(
@@ -331,6 +420,8 @@ class FullDuplexLiveBridge:
                                 )
                     turn_pcm_buffer.clear()
                     turn_text_chunks.clear()
+                    phrase_idx = 0
+                    last_agent_tr = ""
                     await self._send_json(
                         websocket,
                         {"type": "status", "state": "listening"},
