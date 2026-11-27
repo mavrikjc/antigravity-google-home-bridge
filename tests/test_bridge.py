@@ -5942,8 +5942,10 @@ async def test_streaming_resampler_and_audio_stream_end_forwarding(
     fake_session = MagicMock()
     fake_session.send_realtime_input = AsyncMock()
 
-    await bridge._forward_client_to_gemini(fake_ws, fake_session)
+    turn_state = {"has_transcript": False, "last_stream_end_at": 0.0}
+    await bridge._forward_client_to_gemini(fake_ws, fake_session, user_turn_state=turn_state)
     fake_session.send_realtime_input.assert_awaited_once_with(audio_stream_end=True)
+    assert turn_state["last_stream_end_at"] > 0.0
 
 
 @pytest.mark.asyncio
