@@ -911,7 +911,7 @@ class GoogleHomeCastManager:
         )
         if cast_result.get("status") == "casting":
             clip_sec = len(pcm_bytes) / float(max(1, sample_rate) * 2)
-            tail = 1.0 if enqueue else 3.0
+            tail = 1.0 if enqueue else 1.5
             self.extend_cast_mute(clip_sec + tail, append=enqueue)
         return {
             "status": cast_result["status"],

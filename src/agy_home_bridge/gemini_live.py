@@ -561,13 +561,13 @@ class FullDuplexLiveBridge:
                         )
                     )
                 ),
-                # Respond quickly once the user stops talking, while requiring clear speech to start.
+                # Require clear speech to start and allow natural mid-sentence pauses before ending a turn.
                 realtime_input_config=genai_types.RealtimeInputConfig(
                     automatic_activity_detection=genai_types.AutomaticActivityDetection(
                         start_of_speech_sensitivity=genai_types.StartSensitivity.START_SENSITIVITY_LOW,
-                        end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
+                        end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_LOW,
                         silence_duration_ms=self.config.gemini_live_silence_ms,
-                        prefix_padding_ms=100,
+                        prefix_padding_ms=200,
                     )
                 ),
                 # Server-side transcripts replace the phone's Web Speech recognition.

@@ -54,7 +54,7 @@ class BridgeSettings(BaseSettings):
     gemini_use_vertex: bool = Field(default=False, alias="GEMINI_USE_VERTEX")
     gemini_live_voice: str = Field(default="Giro", alias="GEMINI_LIVE_VOICE")
     # How long a pause ends your turn. Lower = snappier replies, but may cut you off mid-thought.
-    gemini_live_silence_ms: int = Field(default=500, alias="GEMINI_LIVE_SILENCE_MS")
+    gemini_live_silence_ms: int = Field(default=1000, alias="GEMINI_LIVE_SILENCE_MS")
 
     agy_workspace_dir: str = Field(
         default_factory=lambda: os.getcwd(), alias="AGY_WORKSPACE_DIR"
@@ -101,10 +101,10 @@ class BridgeSettings(BaseSettings):
     hw_mic_device_index: int | None = Field(default=None, alias="HW_MIC_DEVICE_INDEX")
     hw_mic_device_name: str = Field(default="", alias="HW_MIC_DEVICE_NAME")
     hw_mic_sample_rate: int = Field(default=16000, alias="HW_MIC_SAMPLE_RATE")
-    hw_mic_gain: float = Field(default=4.0, ge=0.5, le=16.0, alias="HW_MIC_GAIN")
-    hw_mic_vad_threshold: float = Field(default=0.018, alias="HW_MIC_VAD_THRESHOLD")
+    hw_mic_gain: float = Field(default=2.0, ge=0.5, le=16.0, alias="HW_MIC_GAIN")
+    hw_mic_vad_threshold: float = Field(default=0.008, alias="HW_MIC_VAD_THRESHOLD")
     hw_mic_silence_duration_sec: float = Field(
-        default=1.1, alias="HW_MIC_SILENCE_DURATION_SEC"
+        default=1.4, alias="HW_MIC_SILENCE_DURATION_SEC"
     )
 
     # JARVIS Mode: Room presence, TV casting, Project Manager & EventHub
