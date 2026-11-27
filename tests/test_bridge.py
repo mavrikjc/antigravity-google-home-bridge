@@ -605,6 +605,7 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
     pcm_chunk_b64 = base64.b64encode(b"\x01\x00" * 160).decode("ascii")
     fake_ws.receive_text = AsyncMock(
         side_effect=[
+            json.dumps({"type": "client_hello", "client_type": "hardware_mic"}),
             json.dumps({"type": "audio_chunk", "pcm_b64": pcm_chunk_b64}),
             json.dumps({"type": "text", "text": "Switch to Kitchen"}),
             json.dumps({"type": "barge_in"}),
@@ -614,10 +615,15 @@ async def test_gemini_live_native_audio_forwarding_and_tools(
         ]
     )
 
+    cast_mgr.extend_cast_mute(5.0)
+    assert cast_mgr.is_casting_audio is True
     fake_session = AsyncMock()
     with pytest.raises(asyncio.CancelledError):
         await bridge._forward_client_to_gemini(fake_ws, fake_session)
     fake_session.send_realtime_input.assert_awaited_once()
+    sent_blob = fake_session.send_realtime_input.call_args.kwargs["audio"]
+    assert sent_blob.data == bytes(320)  # Echo-gated to silence while speaker casts
+    cast_mgr._cast_mute_until = 0.0
     fake_session.send_client_content.assert_awaited_once()
 
     # Test _forward_gemini_to_client with audio inline_data, text, interruption, and tool_call

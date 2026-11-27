@@ -135,7 +135,15 @@ class HardwareMicDaemon:
             while self._running:
                 try:
                     async with websockets.connect(target_ws) as ws:
-                        # Force cast output so replies play on the active Google Home speaker
+                        # Identify as a hardware mic without AEC and force cast output
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "type": "client_hello",
+                                    "client_type": "hardware_mic",
+                                }
+                            )
+                        )
                         await ws.send(
                             json.dumps({"type": "set_routing", "mode": "cast"})
                         )

@@ -173,6 +173,7 @@ class GoogleHomeCastManager:
         self._active_tv: str | None = None
         self._presence_source: str | None = None
         self._presence_updated_at: str | None = None
+        self._cast_mute_until: float = 0.0
         self._retry_task: asyncio.Task[Any] | None = None
 
         self._seed_known_tvs()
@@ -181,6 +182,17 @@ class GoogleHomeCastManager:
             self._active_room = initial_presence["speaker"]
         self._active_tv = initial_presence["tv"]
         self._sync_tv_active_flags()
+
+    @property
+    def is_casting_audio(self) -> bool:
+        """True while a Google Home speaker is expected to be playing cast audio."""
+        return time.monotonic() < self._cast_mute_until
+
+    def extend_cast_mute(self, duration_sec: float, append: bool = False) -> None:
+        """Extend the echo-gate window while Google Home is speaking."""
+        now = time.monotonic()
+        base = max(self._cast_mute_until, now) if append else now
+        self._cast_mute_until = max(self._cast_mute_until, base + max(0.0, duration_sec))
 
     @staticmethod
     def _build_room_device_map(config: BridgeSettings) -> dict[str, dict[str, Any]]:
@@ -766,6 +778,9 @@ class GoogleHomeCastManager:
         cast_result = await asyncio.to_thread(
             self._cast_url_sync, resolved_name, media_url, "audio/mp3", volume
         )
+        if cast_result.get("status") == "casting":
+            est_sec = max(2.0, len(text.split()) * 0.42) + 2.2
+            self.extend_cast_mute(est_sec, append=False)
         return {
             "status": cast_result["status"],
             "room": resolved_name,
@@ -797,6 +812,10 @@ class GoogleHomeCastManager:
             None,
             enqueue,
         )
+        if cast_result.get("status") == "casting":
+            clip_sec = len(pcm_bytes) / float(max(1, sample_rate) * 2)
+            tail = 0.8 if enqueue else 2.2
+            self.extend_cast_mute(clip_sec + tail, append=enqueue)
         return {
             "status": cast_result["status"],
             "room": resolved_name,
@@ -868,6 +887,7 @@ class GoogleHomeCastManager:
 
     async def stop_room(self, room_name: str | None = None) -> None:
         """Stop current playback on the Google Home speaker (used for instant barge-in)."""
+        self._cast_mute_until = 0.0
         resolved_name = self._resolve_speaker_name(room_name)
         await asyncio.to_thread(self._stop_room_sync, resolved_name)
 

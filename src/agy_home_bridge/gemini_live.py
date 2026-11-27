@@ -512,6 +512,7 @@ class FullDuplexLiveBridge:
         session: Any,
         local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
     ) -> None:
+        is_hardware_mic = False
         while True:
             received = await self._receive_ws_frame_text(websocket)
             if received is None:
@@ -544,6 +545,11 @@ class FullDuplexLiveBridge:
                 )
                 continue
             msg_type = msg.get("type")
+
+            if msg_type == "client_hello":
+                if msg.get("client_type") == "hardware_mic":
+                    is_hardware_mic = True
+                continue
 
             if msg_type == "audio_chunk":
                 raw_b64 = msg.get("pcm_b64")
@@ -588,9 +594,16 @@ class FullDuplexLiveBridge:
 
                 from google.genai import types as genai_types
 
+                # Prevent echo loop on wearable/USB mics without hardware AEC by muting
+                # mic audio to digital silence while Google Home is speaking.
+                forward_pcm = (
+                    bytes(len(pcm_bytes))
+                    if is_hardware_mic and self.cast_manager.is_casting_audio
+                    else pcm_bytes
+                )
                 await session.send_realtime_input(
                     audio=genai_types.Blob(
-                        data=pcm_bytes, mime_type="audio/pcm;rate=16000"
+                        data=forward_pcm, mime_type="audio/pcm;rate=16000"
                     ),
                 )
             elif msg_type == "text":
