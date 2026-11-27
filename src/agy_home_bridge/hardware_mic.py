@@ -139,19 +139,14 @@ class HardwareMicDaemon:
                         await ws.send(
                             json.dumps({"type": "set_routing", "mode": "cast"})
                         )
-                        is_speaking = False
                         while self._running:
                             raw_chunk = await audio_queue.get()
                             pcm_chunk = downsample_pcm16_to_16k(raw_chunk, capture_rate)
                             if not pcm_chunk:
                                 continue
-                            rms = compute_pcm16_rms(pcm_chunk)
-                            if rms >= self.config.hw_mic_vad_threshold and not is_speaking:
-                                is_speaking = True
-                                await ws.send(json.dumps({"type": "barge_in"}))
-                            elif rms < self.config.hw_mic_vad_threshold * 0.6:
-                                is_speaking = False
-
+                            # Stream continuously and let Gemini Live's server-side VAD
+                            # (`server_content.interrupted`) handle barge-in without
+                            # hair-trigger local RMS stops cutting off Google Home casts.
                             await ws.send(
                                 json.dumps(
                                     {

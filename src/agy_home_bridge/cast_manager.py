@@ -482,11 +482,8 @@ class GoogleHomeCastManager:
             return self.list_speakers()
 
         try:
-            if self._browser is not None:
-                try:
-                    self._browser.stop_discovery()
-                except Exception:
-                    pass
+            old_browser = self._browser
+            old_chromecasts = list(self._chromecasts.values())
 
             known_hosts = self.config.parsed_known_cast_hosts or None
             chromecasts, browser = pychromecast.get_chromecasts(
@@ -494,6 +491,17 @@ class GoogleHomeCastManager:
                 known_hosts=known_hosts,
             )
             self._browser = browser
+
+            if old_browser is not None and old_browser is not browser:
+                for old_cc in old_chromecasts:
+                    try:
+                        old_cc.disconnect(blocking=False)
+                    except Exception:
+                        pass
+                try:
+                    old_browser.stop_discovery()
+                except Exception:
+                    pass
 
             with self._registry_lock:
                 if merge:
