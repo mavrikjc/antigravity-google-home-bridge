@@ -254,13 +254,22 @@ function normalizeActiveProjects() {
   }
 }
 
+let lastUserTranscriptEl = null;
+
 function appendMessage(role, text) {
   openTranscript = null;
   const div = document.createElement('div');
   div.className = `msg msg-${role}`;
-  div.textContent = text;
+  const span = document.createElement('span');
+  span.className = 'msg-text';
+  span.textContent = text;
+  div.appendChild(span);
   transcriptFeed.appendChild(div);
+  if (role === 'user') {
+    lastUserTranscriptEl = div;
+  }
   transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+  return div;
 }
 
 // Live transcription arrives as word-level fragments: grow one bubble per speaker turn.
@@ -271,10 +280,25 @@ function appendTranscript(role, text, partial) {
     return;
   }
   if (!openTranscript || openTranscript.role !== role) {
-    appendMessage(role, '');
-    openTranscript = { role, el: transcriptFeed.lastElementChild };
+    const el = appendMessage(role, '');
+    openTranscript = { role, el, textEl: el.querySelector('.msg-text') };
   }
-  openTranscript.el.textContent += text;
+  if (openTranscript.textEl) {
+    openTranscript.textEl.textContent += text;
+  }
+  transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+}
+
+function attachPromptAudio(audioUrl) {
+  if (!audioUrl || !lastUserTranscriptEl) return;
+  if (lastUserTranscriptEl.querySelector('audio.prompt-audio')) return;
+  const audio = document.createElement('audio');
+  audio.className = 'prompt-audio';
+  audio.controls = true;
+  audio.preload = 'none';
+  audio.src = audioUrl;
+  audio.setAttribute('aria-label', 'Play recorded voice prompt');
+  lastUserTranscriptEl.appendChild(audio);
   transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
 }
 
@@ -1164,6 +1188,13 @@ function handleEventHubMessage(data) {
 
   if (data.type === 'transcript') {
     appendTranscript(data.role === 'user' ? 'user' : 'agent', data.text, Boolean(data.partial));
+    return true;
+  }
+
+  if (data.type === 'transcript_audio') {
+    if (data.role === 'user' && data.audio_url) {
+      attachPromptAudio(data.audio_url);
+    }
     return true;
   }
 

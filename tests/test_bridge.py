@@ -5817,6 +5817,81 @@ async def test_voice_selector_api_hud_snapshot_and_static_markup(
         app.state.event_hub.unsubscribe(q)
 
 
+@pytest.mark.asyncio
+async def test_user_prompt_audio_saved_and_linked_to_transcript(
+    test_settings: BridgeSettings,
+) -> None:
+    import struct
+
+    app = create_app(test_settings)
+    bridge = app.state.live_bridge
+    q = app.state.event_hub.subscribe()
+
+    # Build a 16kHz PCM buffer with leading silence + active tone
+    silence = b"\x00\x00" * 3200
+    tone = struct.pack("<h", 4000) * 3200
+    user_pcm_ring = bytearray(silence + tone + silence)
+
+    fake_ws = MagicMock()
+    sent_payloads: list[dict[str, Any]] = []
+
+    async def _fake_send_text(text: str) -> None:
+        sent_payloads.append(json.loads(text))
+
+    fake_ws.send_text = AsyncMock(side_effect=_fake_send_text)
+
+    class _FakeResp:
+        def __init__(self, input_text: str | None = None, output_text: str | None = None, turn_complete: bool = False):
+            sc = MagicMock()
+            sc.interrupted = False
+            sc.input_transcription = MagicMock(text=input_text) if input_text else None
+            sc.output_transcription = MagicMock(text=output_text) if output_text else None
+            sc.model_turn = None
+            sc.turn_complete = turn_complete
+            self.server_content = sc
+            self.tool_call = None
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self._done = False
+
+        async def receive(self):
+            if self._done:
+                return
+            self._done = True
+            yield _FakeResp(input_text="Can you hear me?")
+            yield _FakeResp(output_text="Yes, loud and clear.", turn_complete=True)
+
+    try:
+        await bridge._forward_gemini_to_client(
+            fake_ws,
+            _FakeSession(),
+            user_pcm_ring=user_pcm_ring,
+        )
+        audio_msgs = [m for m in sent_payloads if m.get("type") == "transcript_audio"]
+        assert len(audio_msgs) == 1
+        audio_url = audio_msgs[0]["audio_url"]
+        assert audio_url.startswith("/api/tts/prompt_") and audio_url.endswith(".wav")
+
+        # Verify the saved WAV file exists and is non-empty
+        wav_name = audio_url.rsplit("/", 1)[-1]
+        wav_path = test_settings.tts_cache_dir / wav_name
+        assert wav_path.is_file()
+        assert wav_path.stat().st_size > 44
+
+        # Verify EventHub also received transcript_audio for other PWA tabs
+        hub_events: list[dict[str, Any]] = []
+        while not q.empty():
+            hub_events.append(q.get_nowait())
+        assert any(
+            e.get("type") == "transcript_audio" and e.get("audio_url") == audio_url
+            for e in hub_events
+        )
+    finally:
+        app.state.event_hub.unsubscribe(q)
+
+
+
 
 
 

@@ -739,10 +739,14 @@ class GoogleHomeCastManager:
         return filepath
 
     def save_pcm_as_wav(
-        self, pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1
+        self,
+        pcm_bytes: bytes,
+        sample_rate: int = 24000,
+        channels: int = 1,
+        prefix: str = "live_",
     ) -> Path:
-        """Wrap raw 16-bit PCM audio bytes (e.g. from Gemini Live audio output) into a castable WAV file."""
-        filename = f"live_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.wav"
+        """Wrap raw 16-bit PCM audio bytes into a WAV file served from `/api/tts/`."""
+        filename = f"{prefix}{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.wav"
         filepath = self.config.tts_cache_dir / filename
         with wave.open(str(filepath), "wb") as wf:
             wf.setnchannels(channels)

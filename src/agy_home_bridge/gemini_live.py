@@ -200,6 +200,69 @@ class FullDuplexLiveBridge:
         except Exception as exc:
             logger.debug("Failed to publish voice_status '%s': %s", state, exc)
 
+    @staticmethod
+    def _trim_pcm_silence(
+        pcm_bytes: bytes, sample_rate: int = 16000, threshold: int = 350
+    ) -> bytes:
+        """Trim long leading/trailing silence from 16-bit mono PCM while preserving pre/post roll."""
+        if not pcm_bytes or len(pcm_bytes) < 4:
+            return pcm_bytes
+        import array
+        import sys
+
+        even_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
+        samples = array.array("h")
+        samples.frombytes(pcm_bytes[:even_len])
+        if sys.byteorder != "little":
+            samples.byteswap()
+
+        frame_samples = max(1, sample_rate // 10)  # 100 ms frames
+        first_active = -1
+        last_active = -1
+        for idx in range(0, len(samples), frame_samples):
+            chunk = samples[idx : idx + frame_samples]
+            if chunk and max(abs(min(chunk)), abs(max(chunk))) >= threshold:
+                if first_active < 0:
+                    first_active = idx
+                last_active = idx + len(chunk)
+
+        if first_active < 0:
+            # All frames below threshold: keep last 3 seconds so user can inspect noise floor
+            max_bytes = sample_rate * 2 * 3
+            return pcm_bytes[-max_bytes:] if len(pcm_bytes) > max_bytes else pcm_bytes
+
+        pre_roll = int(sample_rate * 0.4)
+        post_roll = int(sample_rate * 0.3)
+        start_sample = max(0, first_active - pre_roll)
+        end_sample = min(len(samples), last_active + post_roll)
+        return pcm_bytes[start_sample * 2 : end_sample * 2]
+
+    async def _publish_transcript_audio(
+        self,
+        role: str,
+        audio_url: str,
+        local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
+    ) -> None:
+        """Broadcast a saved user prompt WAV URL to EventHub so open PWAs attach an audio player."""
+        if self.event_hub is None or not audio_url:
+            return
+        target = self._voice_status_target()
+        ev = await self.event_hub.publish(
+            "transcript_audio",
+            project_id=target.get("project_id"),
+            project_name=target.get("project_name"),
+            short_name=target.get("short_name"),
+            agent_id=target.get("agent_id"),
+            project_agent=target.get("project_agent"),
+            conversation_id=target.get("conversation_id"),
+            role=role,
+            audio_url=audio_url,
+        )
+        if local_emitted_event_ids is not None and isinstance(ev, dict):
+            ev_id = ev.get("event_id")
+            if isinstance(ev_id, str) and ev_id:
+                local_emitted_event_ids.add(ev_id)
+
     async def _publish_transcript(
         self,
         role: str,
@@ -528,16 +591,21 @@ class FullDuplexLiveBridge:
                     },
                 )
 
+                user_pcm_ring = bytearray()
                 client_to_gemini = asyncio.create_task(
                     self._forward_client_to_gemini(
                         websocket,
                         session,
                         local_emitted_event_ids=local_emitted_event_ids,
+                        user_pcm_ring=user_pcm_ring,
                     )
                 )
                 gemini_to_client = asyncio.create_task(
                     self._forward_gemini_to_client(
-                        websocket, session, local_emitted_event_ids
+                        websocket,
+                        session,
+                        local_emitted_event_ids,
+                        user_pcm_ring=user_pcm_ring,
                     )
                 )
 
@@ -619,6 +687,7 @@ class FullDuplexLiveBridge:
         websocket: WebSocket,
         session: Any,
         local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
+        user_pcm_ring: bytearray | None = None,
     ) -> None:
         is_hardware_mic = False
         while True:
@@ -723,6 +792,11 @@ class FullDuplexLiveBridge:
                     or (is_hardware_mic and self.cast_manager.is_casting_audio)
                     else pcm_bytes
                 )
+                if user_pcm_ring is not None:
+                    user_pcm_ring.extend(forward_pcm)
+                    max_ring_bytes = 16000 * 2 * 15  # 15s @ 16kHz 16-bit mono
+                    if len(user_pcm_ring) > max_ring_bytes:
+                        del user_pcm_ring[:-max_ring_bytes]
                 await session.send_realtime_input(
                     audio=genai_types.Blob(
                         data=forward_pcm, mime_type="audio/pcm;rate=16000"
@@ -861,12 +935,49 @@ class FullDuplexLiveBridge:
         websocket: WebSocket,
         session: Any,
         local_emitted_event_ids: set[str] | _BoundedEventIdSet | None = None,
+        user_pcm_ring: bytearray | None = None,
     ) -> None:
         turn_pcm_buffer = bytearray()
         turn_text_chunks: list[str] = []
         phrase_idx = 0
         last_agent_tr = ""
         cast_tasks: list[asyncio.Task[Any]] = []
+        user_turn_has_transcript = False
+
+        async def _flush_user_prompt_audio() -> None:
+            nonlocal user_turn_has_transcript
+            if not user_turn_has_transcript or not user_pcm_ring:
+                return
+            pcm_copy = bytes(user_pcm_ring)
+            user_pcm_ring.clear()
+            user_turn_has_transcript = False
+            trimmed = self._trim_pcm_silence(pcm_copy, sample_rate=16000)
+            if not trimmed:
+                return
+            try:
+                wav_path = await asyncio.to_thread(
+                    self.cast_manager.save_pcm_as_wav,
+                    trimmed,
+                    16000,
+                    1,
+                    "prompt_",
+                )
+                audio_url = f"/api/tts/{wav_path.name}"
+                await self._send_json(
+                    websocket,
+                    {
+                        "type": "transcript_audio",
+                        "role": "user",
+                        "audio_url": audio_url,
+                    },
+                )
+                await self._publish_transcript_audio(
+                    "user",
+                    audio_url,
+                    local_emitted_event_ids=local_emitted_event_ids,
+                )
+            except Exception as exc:
+                logger.debug("Failed to save user prompt audio: %s", exc)
 
         def _track_cast_task(coro: Any) -> asyncio.Task[Any]:
             cast_tasks[:] = [t for t in cast_tasks if not t.done()]
@@ -944,7 +1055,10 @@ class FullDuplexLiveBridge:
                         tr = getattr(server_content, attr, None)
                         tr_text = getattr(tr, "text", None) if tr is not None else None
                         if isinstance(tr_text, str) and tr_text:
-                            if role == "agent":
+                            if role == "user":
+                                user_turn_has_transcript = True
+                            elif role == "agent":
+                                await _flush_user_prompt_audio()
                                 last_agent_tr += tr_text
                             await self._send_json(
                                 websocket,
@@ -964,6 +1078,7 @@ class FullDuplexLiveBridge:
 
                     model_turn = getattr(server_content, "model_turn", None)
                     if model_turn is not None:
+                        await _flush_user_prompt_audio()
                         for part in (getattr(model_turn, "parts", None) or []):
                             inline_data = getattr(part, "inline_data", None)
                             if inline_data and getattr(inline_data, "data", None):
@@ -1035,6 +1150,7 @@ class FullDuplexLiveBridge:
                 # Handle live function/tool calls from Gemini Live -> Antigravity Agent / Google Home
                 tool_call = getattr(response, "tool_call", None)
                 if tool_call is not None:
+                    await _flush_user_prompt_audio()
                     await self._handle_live_tool_calls(websocket, session, tool_call)
         finally:
             pending_cast = [t for t in cast_tasks if not t.done()]
