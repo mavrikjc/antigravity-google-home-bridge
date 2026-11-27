@@ -51,6 +51,9 @@ class BridgeSettings(BaseSettings):
         alias="AGY_APP_DATA_DIR",
     )
     agy_enable_write_tools: bool = Field(default=True, alias="AGY_ENABLE_WRITE_TOOLS")
+    # "Turbo mode": let the agent run any shell command without confirmation (policy.allow_all()).
+    # Off by default; voice sessions have no one to approve commands, so they'd otherwise be denied.
+    agy_allow_all_commands: bool = Field(default=False, alias="AGY_ALLOW_ALL_COMMANDS")
     agy_enable_sandbox: bool = Field(default=False, alias="AGY_ENABLE_SANDBOX")
 
     # Local Antigravity Desktop / Language Server bridge (optional)

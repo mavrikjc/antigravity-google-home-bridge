@@ -212,6 +212,10 @@ class AntigravityAgentEngine:
                 kwargs["conversation_id"] = self.conversation_id
             if self.config.agy_enable_write_tools:
                 kwargs["capabilities"] = CapabilitiesConfig()
+            if self.config.agy_allow_all_commands:
+                from google.antigravity.hooks import policy  # type: ignore
+
+                kwargs["policies"] = [policy.allow_all()]
 
             ag_config = LocalAgentConfig(**kwargs)
             chunks: list[str] = []
