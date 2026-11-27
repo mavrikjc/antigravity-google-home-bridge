@@ -7,6 +7,7 @@ const hudConnStatus = document.getElementById('hudConnStatus');
 const hudVoiceStatus = document.getElementById('hudVoiceStatus');
 const hudVoiceIcon = document.getElementById('hudVoiceIcon');
 const hudVoiceLabel = document.getElementById('hudVoiceLabel');
+const hudVoiceNameLabel = document.getElementById('hudVoiceNameLabel');
 const hudClock = document.getElementById('hudClock');
 const hudActiveRoom = document.getElementById('hudActiveRoom');
 const hudActiveSpeaker = document.getElementById('hudActiveSpeaker');
@@ -26,6 +27,7 @@ const hudState = {
   active_speaker: 'Whole Home',
   active_tv: null,
   voice_status: 'idle',
+  voice_name: 'Giro',
   active_project_id: null,
   active_agent_id: '101',
   active_project_agent: null,
@@ -69,6 +71,14 @@ function setVoiceStatus(statusText) {
   }
   if (hudVoiceLabel) {
     hudVoiceLabel.textContent = `Voice: ${normalized.toUpperCase()}`;
+  }
+}
+
+function setVoiceName(name) {
+  if (!name) return;
+  hudState.voice_name = String(name);
+  if (hudVoiceNameLabel) {
+    hudVoiceNameLabel.textContent = hudState.voice_name;
   }
 }
 
@@ -469,6 +479,7 @@ function handleHudEvent(ev, replay = false) {
         hudState.pending_project_id = null;
       }
       setVoiceStatus(ev.voice_status || 'idle');
+      if (ev.voice_name) setVoiceName(ev.voice_name);
       renderLocationHeader();
       renderActiveTargetBanner();
       renderNodeTree();
@@ -479,6 +490,16 @@ function handleHudEvent(ev, replay = false) {
         hudActivityStream.replaceChildren();
         for (const item of ev.recent_events.slice(-60)) {
           handleHudEvent(item, true);
+        }
+      }
+      break;
+    }
+
+    case 'voice_changed': {
+      if (ev.voice_name) {
+        setVoiceName(ev.voice_name);
+        if (!replay) {
+          appendStreamItem('voice_status', 'voice', `Voice switched to ${ev.voice_name}`, ev.timestamp);
         }
       }
       break;
@@ -755,6 +776,7 @@ async function hydrateHudInitial() {
           hudState.active_project_agent = h.active_project_agent;
         }
         if (h.voice_status) setVoiceStatus(h.voice_status);
+        if (h.voice_name) setVoiceName(h.voice_name);
       }
     } catch (_) {}
   }

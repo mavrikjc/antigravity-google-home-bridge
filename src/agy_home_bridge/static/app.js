@@ -53,6 +53,7 @@ const roomPills = document.getElementById('roomPills');
 const refreshSpeakersBtn = document.getElementById('refreshSpeakersBtn');
 const activeTvLabel = document.getElementById('activeTvLabel');
 const muteVoiceBtn = document.getElementById('muteVoiceBtn');
+const voiceSelect = document.getElementById('voiceSelect');
 const muteVoiceIcon = document.getElementById('muteVoiceIcon');
 const muteVoiceLabel = document.getElementById('muteVoiceLabel');
 const castHudBtn = document.getElementById('castHudBtn');
@@ -115,6 +116,45 @@ if (muteVoiceBtn) {
       if (res.ok) {
         const data = await res.json();
         updateMuteButton(Boolean(data.voice_muted));
+      }
+    } catch (_) {}
+  });
+}
+
+function updateVoiceSelect(voiceName, availableVoices) {
+  if (!voiceSelect) return;
+  if (Array.isArray(availableVoices) && availableVoices.length) {
+    const existing = Array.from(voiceSelect.options).map((o) => o.value);
+    const same =
+      existing.length === availableVoices.length &&
+      existing.every((v, idx) => v === availableVoices[idx]);
+    if (!same) {
+      voiceSelect.innerHTML = '';
+      for (const v of availableVoices) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        voiceSelect.appendChild(opt);
+      }
+    }
+  }
+  if (voiceName) {
+    voiceSelect.value = voiceName;
+  }
+}
+
+if (voiceSelect) {
+  voiceSelect.addEventListener('change', async () => {
+    const selected = voiceSelect.value;
+    try {
+      const res = await fetch('/api/voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_name: selected }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        updateVoiceSelect(data.voice_name, data.available_voices);
       }
     } catch (_) {}
   });
@@ -673,6 +713,12 @@ async function fetchHealth() {
     if (data.voice_status) {
       voiceStatus = data.voice_status;
     }
+    if (typeof data.voice_muted === 'boolean') {
+      updateMuteButton(data.voice_muted);
+    }
+    if (data.voice_name || data.available_voices) {
+      updateVoiceSelect(data.voice_name, data.available_voices);
+    }
     if (
       (data.active_project_id !== undefined || data.active_project_agent !== undefined) &&
       selectSeqAtStart === selectRequestSeq &&
@@ -1121,6 +1167,13 @@ function handleEventHubMessage(data) {
     return true;
   }
 
+  if (data.type === 'voice_changed') {
+    if (data.voice_name) {
+      updateVoiceSelect(data.voice_name);
+    }
+    return true;
+  }
+
   if (data.type === 'voice_status') {
     voiceStatus = data.voice_status || data.status || voiceStatus;
     if (typeof data.voice_muted === 'boolean') {
@@ -1173,6 +1226,9 @@ function connectWebSocket() {
       }
       if (typeof data.voice_muted === 'boolean') {
         updateMuteButton(data.voice_muted);
+      }
+      if (data.voice_name) {
+        updateVoiceSelect(data.voice_name);
       }
       statusSubtitle.textContent = `Live (${data.state || 'ready'}) · Speaker: ${activeRoom || 'Whole Home'}`;
       if (data.state === 'thinking') {

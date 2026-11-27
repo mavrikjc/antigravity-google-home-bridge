@@ -157,6 +157,20 @@ p, dd {
   color: var(--hud-speaking);
 }
 
+.hud-voice-name-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  min-block-size: 2.5rem;
+  border-radius: 999px;
+  border: 2px solid var(--hud-border);
+  background: var(--hud-elevated);
+  font-weight: 700;
+  font-size: clamp(0.85rem, 0.78rem + 0.3vw, 1.08rem);
+  color: var(--hud-text);
+}
+
 .hud-clock {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: clamp(1rem, 0.85rem + 0.45vw, 1.35rem);

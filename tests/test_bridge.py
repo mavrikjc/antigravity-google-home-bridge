@@ -5761,6 +5761,63 @@ async def test_speak_on_room_prefers_gemini_voice_and_falls_back_to_gtts(
     assert res_fb["media_url"].endswith("/fallback.mp3")
 
 
+@pytest.mark.asyncio
+async def test_voice_selector_api_hud_snapshot_and_static_markup(
+    test_settings: BridgeSettings,
+) -> None:
+    import httpx
+
+    app = create_app(test_settings)
+    q = app.state.event_hub.subscribe()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            r_health = await client.get("/api/health")
+            assert r_health.status_code == 200
+            h = r_health.json()
+            assert h["voice_name"] == "Giro"
+            assert "Giro" in h["available_voices"]
+            assert "Puck" in h["available_voices"]
+
+            r_get = await client.get("/api/voice")
+            assert r_get.status_code == 200
+            assert r_get.json()["voice_name"] == "Giro"
+
+            r_bad = await client.post("/api/voice", json={"voice_name": "NotARealVoice"})
+            assert r_bad.status_code == 400
+
+            r_set = await client.post("/api/voice", json={"voice_name": "kore"})
+            assert r_set.status_code == 200
+            assert r_set.json()["voice_name"] == "Kore"
+            assert test_settings.gemini_live_voice == "Kore"
+
+            ev = await asyncio.wait_for(q.get(), timeout=2.0)
+            assert ev["type"] == "voice_changed"
+            assert ev["voice_name"] == "Kore"
+
+            snap = app.state.event_hub.build_snapshot(
+                app.state.project_manager,
+                app.state.cast_manager,
+                voice_status=app.state.live_bridge.voice_status,
+                voice_muted=app.state.live_bridge.voice_muted,
+                voice_name=app.state.live_bridge.voice_name,
+            )
+            assert snap["voice_name"] == "Kore"
+
+            r_pwa = await client.get("/")
+            assert r_pwa.status_code == 200
+            assert 'id="voiceSelect"' in r_pwa.text
+
+            r_hud = await client.get("/hud")
+            assert r_hud.status_code == 200
+            assert 'id="hudVoiceNameLabel"' in r_hud.text
+            assert "<select" not in r_hud.text
+    finally:
+        app.state.event_hub.unsubscribe(q)
+
+
+
 
 
 

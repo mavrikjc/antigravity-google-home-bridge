@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from agy_home_bridge.antigravity_agent import AntigravityAgentEngine
 from agy_home_bridge.cast_manager import GoogleHomeCastManager, normalize_room_key
-from agy_home_bridge.config import BridgeSettings, settings
+from agy_home_bridge.config import AVAILABLE_GEMINI_VOICES, BridgeSettings, settings
 from agy_home_bridge.event_hub import EventHub, safe_json_dumps
 from agy_home_bridge.gemini_live import FullDuplexLiveBridge
 from agy_home_bridge.hardware_mic import HardwareMicDaemon
@@ -130,6 +130,12 @@ class VoiceMuteRequest(BaseModel):
     """Payload for `/api/voice/mute`."""
 
     muted: bool = Field(..., description="Whether global voice input should be muted.")
+
+
+class VoiceSelectRequest(BaseModel):
+    """Payload for `/api/voice`."""
+
+    voice_name: str = Field(..., description="Gemini Live prebuilt voice name (e.g. Giro, Puck, Kore).")
 
 
 def _strict_json_loads(raw_bytes: bytes) -> Any:
@@ -252,6 +258,8 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
             "active_project_agent": proj_summary.get("active_project_agent"),
             "voice_status": live_bridge.voice_status,
             "voice_muted": live_bridge.voice_muted,
+            "voice_name": live_bridge.voice_name,
+            "available_voices": list(AVAILABLE_GEMINI_VOICES),
         }
 
     @app.get("/api/tls/ca.pem")
@@ -384,6 +392,25 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
             source="api",
         )
         return {"status": "ok", **selection}
+
+    @app.get("/api/voice")
+    async def get_voice() -> dict[str, Any]:
+        return {
+            "voice_name": live_bridge.voice_name,
+            "available_voices": list(AVAILABLE_GEMINI_VOICES),
+        }
+
+    @app.post("/api/voice")
+    async def set_voice(req: VoiceSelectRequest) -> dict[str, Any]:
+        try:
+            selected = await live_bridge.set_voice_name(req.voice_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "ok",
+            "voice_name": selected,
+            "available_voices": list(AVAILABLE_GEMINI_VOICES),
+        }
 
     @app.get("/api/voice/mute")
     async def get_voice_mute() -> dict[str, Any]:
@@ -518,6 +545,7 @@ def create_app(custom_settings: BridgeSettings | None = None) -> FastAPI:
                 cast_manager,
                 voice_status=live_bridge.voice_status,
                 voice_muted=live_bridge.voice_muted,
+                voice_name=live_bridge.voice_name,
             )
             await websocket.send_text(safe_json_dumps(snapshot))
 

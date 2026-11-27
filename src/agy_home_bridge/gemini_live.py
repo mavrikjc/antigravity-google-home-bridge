@@ -89,6 +89,53 @@ class FullDuplexLiveBridge:
         )
         self._voice_status: str = "idle"
         self._voice_muted: bool = False
+        self._active_websockets: set[WebSocket] = set()
+
+    @property
+    def voice_name(self) -> str:
+        """Currently selected Gemini Live voice name."""
+        return self.config.gemini_live_voice
+
+    async def set_voice_name(self, voice_name: str) -> str:
+        """Switch the active Gemini Live voice, broadcast to EventHub, and recycle active live sessions."""
+        from agy_home_bridge.config import AVAILABLE_GEMINI_VOICES
+
+        cleaned = (voice_name or "").strip()
+        canonical = next(
+            (v for v in AVAILABLE_GEMINI_VOICES if v.lower() == cleaned.lower()),
+            None,
+        )
+        if canonical is None:
+            raise ValueError(
+                f"Unknown voice '{voice_name}'. Available voices: {', '.join(AVAILABLE_GEMINI_VOICES)}"
+            )
+
+        changed = canonical != self.config.gemini_live_voice
+        self.config.gemini_live_voice = canonical
+
+        if self.event_hub is not None:
+            target = self._voice_status_target()
+            await self.event_hub.publish(
+                "voice_changed",
+                project_id=target.get("project_id"),
+                project_name=target.get("project_name"),
+                short_name=target.get("short_name"),
+                agent_id=target.get("agent_id"),
+                project_agent=target.get("project_agent"),
+                conversation_id=target.get("conversation_id"),
+                voice_name=canonical,
+            )
+
+        if changed and self._active_websockets:
+            # Close active live WebSockets cleanly (1012 Service Restart) so hardware mic
+            # and connected PWAs auto-reconnect with the new Gemini Live voice.
+            for active_ws in list(self._active_websockets):
+                try:
+                    await active_ws.close(code=1012, reason="Voice changed")
+                except Exception:
+                    pass
+
+        return canonical
 
     @property
     def voice_status(self) -> str:
@@ -237,6 +284,7 @@ class FullDuplexLiveBridge:
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Main full-duplex WebSocket loop for a connected voice client or room mic satellite."""
         await websocket.accept()
+        self._active_websockets.add(websocket)
         await self._send_json(
             websocket,
             {
@@ -248,6 +296,7 @@ class FullDuplexLiveBridge:
                 "routing_mode": self.cast_manager.routing_mode,
                 "speakers": self.cast_manager.list_speakers(),
                 "live_model": self.config.gemini_live_model,
+                "voice_name": self.config.gemini_live_voice,
             },
         )
 
@@ -278,6 +327,7 @@ class FullDuplexLiveBridge:
                     local_emitted_event_ids=local_emitted_event_ids,
                 )
         finally:
+            self._active_websockets.discard(websocket)
             if self.event_hub is not None and hub_queue is not None:
                 self.event_hub.unsubscribe(hub_queue)
             if forwarder_task is not None and not forwarder_task.done():

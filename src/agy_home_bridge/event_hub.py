@@ -385,6 +385,7 @@ class EventHub:
         cast_manager: Any = None,
         voice_status: str = "idle",
         voice_muted: bool = False,
+        voice_name: str | None = None,
         *,
         event_limit: int = 100,
     ) -> dict[str, Any]:
@@ -418,6 +419,7 @@ class EventHub:
             "routing_mode": routing_mode,
             "voice_status": "muted" if voice_muted else voice_status,
             "voice_muted": bool(voice_muted),
+            "voice_name": voice_name,
             "projects": list(summary.get("projects") or []),
             "active_project_id": summary.get("active_project_id"),
             "active_agent_id": summary.get("active_agent_id"),

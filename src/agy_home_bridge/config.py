@@ -22,6 +22,19 @@ def detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
+AVAILABLE_GEMINI_VOICES: tuple[str, ...] = (
+    "Giro",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Aoede",
+    "Leda",
+    "Orus",
+    "Zephyr",
+)
+
+
 class BridgeSettings(BaseSettings):
     """Application settings loaded from environment variables or .env."""
 

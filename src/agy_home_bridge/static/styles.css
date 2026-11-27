@@ -212,7 +212,26 @@ p, small {
 .top-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.voice-select {
+  appearance: auto;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated, var(--surface));
+  color: var(--text-primary, inherit);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.voice-select:focus-visible {
+  outline: 2px solid var(--accent, #60a5fa);
+  outline-offset: 2px;
 }
 
 .mute-pill[data-muted="true"] {
